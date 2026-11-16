@@ -288,7 +288,7 @@
       card.tags.length ? h("div", { class: "card-tags" }, card.tags.map((t) => h("span", { class: "tag" }, "#" + t.name))) : null,
       h("div", { class: "card-foot" },
         h("span", { class: "card-meta", title: "Автор" }, card.author ? card.author.name : "Автор неизвестен"),
-        card.assignee ? h("span", { class: "card-meta", title: "Исполнитель" }, "→ " + card.assignee.name) : null,
+        card.assignee ? h("span", { class: "card-meta", title: "Исполнитель" }, "→ ", V.avatarEl(card.assignee, "avatar-xs"), card.assignee.name) : null,
         h("span", { class: "spacer" }),
         card.reopen_count ? h("span", { class: "card-meta card-returns", title: "Сколько раз возвращали в работу" }, `↩ ${card.reopen_count}`) : null,
         card.attachment_count ? h("span", { class: "card-meta", title: "Скриншоты" }, svg(ICON_IMAGE), card.attachment_count) : null,
@@ -545,7 +545,7 @@
 
   function commentsEl(card) {
     const list = h("ul", { class: "feed" }, card.comments.length ? card.comments.map((c) => h("li", { class: "feed-item" },
-      h("span", { class: "avatar", "aria-hidden": "true" }, (c.author ? c.author.name : "?")[0].toUpperCase()),
+      V.avatarEl(c.author),
       h("div", { class: "feed-body" },
         h("div", { class: "feed-head" }, h("strong", null, c.author ? c.author.name : "Удалённый пользователь"), timeEl(c.created_at)),
         h("p", { class: "feed-text" }, rich(c.body)))))

@@ -66,6 +66,10 @@ def profile():
         discord_bot=notifier.discord is not None,
         telegram_bot=notifier.telegram is not None,
     )
+    if user["role"] == "admin":
+        data["audit_users"] = [{"id": r["id"], "name": r["display_name"], "username": r["username"]}
+                               for r in get_db().execute("SELECT id, display_name, username FROM users "
+                                                         "ORDER BY display_name COLLATE NOCASE")]
     return render_template("profile.html", boot=data, section="Профиль")
 
 

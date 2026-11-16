@@ -6,12 +6,30 @@
 
   <section class="panel" aria-labelledby="p-main">
     <h2 id="p-main">Основное</h2>
+    <div class="avatar-row">
+      <span id="p-avatar"></span>
+      <div class="form-stack">
+        <div class="row-gap">
+          <button type="button" class="btn btn-sm" id="p-avatar-pick">Загрузить аватарку</button>
+          <button type="button" class="btn btn-ghost btn-sm" id="p-avatar-remove">Убрать</button>
+          <input type="file" id="p-avatar-file" accept="image/png,image/jpeg,image/gif,image/webp" hidden>
+        </div>
+        <p class="muted small m0">PNG, JPG, GIF или WebP. Картинка обрежется до квадрата.</p>
+      </div>
+    </div>
     <form id="profile-form" class="form-stack" novalidate>
       <div class="field">
         <label for="p-name">Отображаемое имя</label>
         <input id="p-name" maxlength="50" required>
       </div>
-      <p class="muted small">Логин для упоминаний: <code id="p-username"></code> — в комментариях пишите <code id="p-mention"></code></p>
+      <div class="field">
+        <label for="p-username">Логин <span class="muted">(для входа и @упоминаний)</span></label>
+        <input id="p-username" maxlength="32" autocomplete="username" spellcheck="false">
+        <p class="hint" data-error-for="username"></p>
+        <p class="muted small m0">В комментариях вас упоминают так: <code id="p-mention"></code>.
+          Если сменить логин, старые упоминания продолжат указывать на вас.</p>
+        <p class="muted small m0" id="p-aliases" hidden></p>
+      </div>
       <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
   </section>
@@ -64,5 +82,58 @@
     </form>
   </section>
 </div>
+
+{% if g.user.role == 'admin' %}
+<div class="page-wide">
+  <section class="panel" aria-labelledby="p-audit">
+    <div class="page-title-row">
+      <h2 id="p-audit">Журнал действий</h2>
+      <span class="muted small">Видно только администраторам</span>
+    </div>
+    <p class="muted small">Кто что делал на сайте: входы, карточки, комментарии, профили и настройки. Время — МСК.</p>
+    <form class="filters audit-filters" id="audit-filters">
+      <label class="sr-only" for="a-user">Пользователь</label>
+      <select id="a-user"><option value="">Все пользователи</option></select>
+      <label class="sr-only" for="a-group">Тип действий</label>
+      <select id="a-group"><option value="">Все действия</option></select>
+      <label class="sr-only" for="a-q">Поиск</label>
+      <input id="a-q" type="search" placeholder="Поиск: текст, #карточка, IP">
+      <button type="button" class="btn btn-ghost btn-sm" id="a-refresh">Обновить</button>
+    </form>
+    <div class="table-wrap">
+      <table class="table audit-table">
+        <thead>
+          <tr>
+            <th scope="col">Когда</th>
+            <th scope="col">Кто</th>
+            <th scope="col">Действие</th>
+            <th scope="col">Подробности</th>
+            <th scope="col">IP</th>
+          </tr>
+        </thead>
+        <tbody id="audit-body"></tbody>
+      </table>
+    </div>
+    <p class="row-gap audit-more"><button type="button" class="btn btn-sm" id="a-more" hidden>Показать ещё</button></p>
+  </section>
+</div>
+{% endif %}
+
+<dialog class="modal modal-sm" id="confirm-modal" aria-labelledby="confirm-title">
+  <div class="modal-inner">
+    <h2 id="confirm-title">Вы уверены?</h2>
+    <p id="confirm-text" class="muted"></p>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Подтвердить</button>
+      </div>
+    </footer>
+  </div>
+</dialog>
 {% endblock %}
-{% block scripts %}<script src="{{ url_for('static', filename='js/profile.js') }}"></script>{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/profile.js') }}"></script>
+{% if g.user.role == 'admin' %}<script src="{{ url_for('static', filename='js/audit.js') }}"></script>{% endif %}
+{% endblock %}

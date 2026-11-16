@@ -11,7 +11,7 @@ from flask import (Blueprint, abort, current_app, flash, g, jsonify,
                    url_for)
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from . import discord_api
+from . import audit, discord_api
 from .constants import LIMITS
 from .db import get_db, utcnow
 from .notify import DEFAULT_EVENTS
@@ -87,13 +87,14 @@ def check_csrf():
         abort(redirect(request.path))
 
 
-def login_user(user):
+def login_user(user, method="пароль"):
     session.clear()  # защита от фиксации сессии
     session.permanent = True
     session["uid"] = user["id"]
     csrf_token()
     db = get_db()
     db.execute("UPDATE users SET last_login_at = ? WHERE id = ?", (utcnow(), user["id"]))
+    audit.write(db, "auth.login", f"способ: {method}", user_id=user["id"])
     db.commit()
 
 
@@ -109,7 +110,7 @@ def load_user():
     g.user = user
 
 
-PUBLIC_ENDPOINTS = {"auth.login", "auth.discord_start", "auth.discord_callback", "static", "health"}
+PUBLIC_ENDPOINTS = {"auth.login", "auth.discord_start", "auth.discord_callback", "static", "pages.health"}
 PENDING_ENDPOINTS = {"auth.pending", "auth.logout"}
 
 
@@ -174,6 +175,10 @@ def login():
                 flash(f"Добро пожаловать, {user['display_name']}!", "success")
                 return redirect(safe_next(request.args.get("next")))
             limiter.fail(ip, username)
+            db = get_db()
+            audit.write(db, "auth.login_failed", f"логин: {username or '—'}",
+                        user_id=user["id"] if user else None)
+            db.commit()
             error = "Неверный логин или пароль."
     return render_template("login.html", error=error, username=username,
                            discord_enabled=discord_enabled), (401 if error else 200)
@@ -181,6 +186,10 @@ def login():
 
 @bp.route("/logout", methods=["POST"])
 def logout():
+    if g.user is not None:
+        db = get_db()
+        audit.write(db, "auth.logout")
+        db.commit()
     session.clear()
     flash("Вы вышли из аккаунта.", "success")
     return redirect(url_for("auth.login"))
@@ -250,6 +259,7 @@ def discord_callback():
             flash("Этот Discord уже привязан к другому аккаунту.", "error")
         else:
             db.execute("UPDATE users SET discord_id = ? WHERE id = ?", (discord_id, g.user["id"]))
+            audit.write(db, "auth.discord_link", f"Discord ID {discord_id}")
             db.commit()
             flash("Discord привязан к аккаунту.", "success")
         return redirect(url_for("pages.profile"))
@@ -262,13 +272,15 @@ def discord_callback():
             (_unique_username(db, info.get("username")), display, discord_id,
              DEFAULT_EVENTS["pending"], utcnow()),
         )
+        audit.write(db, "auth.discord_register", f"Discord: {info.get('username', '')} ({discord_id})",
+                    user_id=cur.lastrowid)
         db.commit()
         existing = db.execute("SELECT * FROM users WHERE id = ?", (cur.lastrowid,)).fetchone()
         _notify_admins_new_user(db, existing)
     if not existing["is_active"]:
         flash("Ваш аккаунт отключён администратором.", "error")
         return redirect(url_for("auth.login"))
-    login_user(existing)
+    login_user(existing, "Discord")
     if existing["role"] == "pending":
         return redirect(url_for("auth.pending"))
     flash(f"Добро пожаловать, {existing['display_name']}!", "success")

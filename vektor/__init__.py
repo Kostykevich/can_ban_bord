@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, api, auth, db, pages
+from . import admin, api, audit, auth, db, pages
 from .discord_api import DiscordBot
 from .notify import Dispatcher
 from .telegram_bot import TelegramBot
@@ -96,6 +96,8 @@ def create_app(test_config=None):
         auth.load_user()
         auth.check_csrf()
         return auth.require_login()
+
+    app.after_request(audit.after_request)
 
     @app.after_request
     def _security_headers(resp):

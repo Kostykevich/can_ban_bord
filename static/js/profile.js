@@ -2,25 +2,117 @@
 "use strict";
 
 (() => {
-  const { $, h, api, busy, toast, BOOT, confirmDialog } = V;
+  const { $, h, api, busy, toast, BOOT, confirmDialog, avatarEl, showFieldErrors } = V;
   const p = BOOT.profile;
+  const LOGIN_RE = /^[A-Za-z0-9_.\-]{2,32}$/;
 
-  $("#p-name").value = p.display_name;
-  $("#p-username").textContent = p.username;
-  $("#p-mention").textContent = "@" + p.username;
+  function renderIdentity() {
+    $("#p-name").value = p.display_name;
+    $("#p-username").value = p.username;
+    $("#p-mention").textContent = "@" + p.username;
+    const aliases = $("#p-aliases");
+    aliases.hidden = !p.aliases.length;
+    aliases.textContent = p.aliases.length ? "Прежние логины (тоже работают в упоминаниях): " + p.aliases.map((a) => "@" + a).join(", ") : "";
+    renderAvatar();
+  }
 
-  $("#profile-form").addEventListener("submit", (e) => {
-    e.preventDefault();
-    const name = $("#p-name").value.trim();
-    if (!name) { toast("Имя не может быть пустым", "error"); return; }
-    busy(e.submitter, async () => {
+  // ------------------------------------------------------------ аватарка
+
+  function renderAvatar() {
+    $("#p-avatar").replaceChildren(avatarEl({ name: p.display_name, avatar: p.avatar }, "avatar-xl"));
+    $("#p-avatar-remove").hidden = !p.avatar;
+    // аватарка в шапке сайта
+    const head = document.getElementById("header-avatar");
+    if (head) {
+      const fresh = avatarEl({ name: p.display_name, avatar: p.avatar });
+      fresh.id = "header-avatar";
+      head.replaceWith(fresh);
+    }
+  }
+
+  /* Обрезаем картинку до квадрата 256×256 прямо в браузере — файл получается маленьким */
+  function cropSquare(file) {
+    return new Promise((resolve, reject) => {
+      const url = URL.createObjectURL(file);
+      const img = new Image();
+      img.onload = () => {
+        const size = Math.min(img.naturalWidth, img.naturalHeight);
+        const canvas = document.createElement("canvas");
+        canvas.width = canvas.height = 256;
+        canvas.getContext("2d").drawImage(img, (img.naturalWidth - size) / 2, (img.naturalHeight - size) / 2, size, size, 0, 0, 256, 256);
+        URL.revokeObjectURL(url);
+        canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("Не удалось обработать картинку"))), "image/png");
+      };
+      img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("Файл не похож на картинку")); };
+      img.src = url;
+    });
+  }
+
+  const avatarInput = $("#p-avatar-file");
+  $("#p-avatar-pick").addEventListener("click", () => avatarInput.click());
+  avatarInput.addEventListener("change", () => {
+    const file = avatarInput.files[0];
+    avatarInput.value = "";
+    if (!file) return;
+    if (!/^image\/(png|jpeg|gif|webp)$/.test(file.type)) { toast("Только PNG, JPG, GIF или WebP", "error"); return; }
+    if (file.size > 15 * 1024 * 1024) { toast("Файл слишком большой", "error"); return; }
+    busy($("#p-avatar-pick"), async () => {
       try {
-        await api("PATCH", "/api/profile", { display_name: name });
-        toast("Имя сохранено");
-        document.querySelectorAll(".user-chip-text strong").forEach((el) => { el.textContent = name; });
+        const blob = await cropSquare(file);
+        const fd = new FormData();
+        fd.append("file", blob, "avatar.png");
+        p.avatar = (await api("POST", "/api/profile/avatar", fd, true)).avatar;
+        renderAvatar();
+        toast("Аватарка обновлена");
       } catch (ex) { toast(ex.message, "error"); }
     });
   });
+  $("#p-avatar-remove").addEventListener("click", (e) => busy(e.currentTarget, async () => {
+    try {
+      await api("DELETE", "/api/profile/avatar");
+      p.avatar = null;
+      renderAvatar();
+      toast("Аватарка убрана");
+    } catch (ex) { toast(ex.message, "error"); }
+  }));
+
+  // ------------------------------------------------------------ имя и логин
+
+  $("#p-username").addEventListener("input", () => {
+    const v = $("#p-username").value.trim();
+    $("#p-mention").textContent = "@" + (v || p.username);
+  });
+
+  $("#profile-form").addEventListener("submit", (e) => {
+    e.preventDefault();
+    const form = e.currentTarget;
+    const name = $("#p-name").value.trim();
+    const login = $("#p-username").value.trim();
+    if (!name) { toast("Имя не может быть пустым", "error"); return; }
+    if (!LOGIN_RE.test(login)) { showFieldErrors(form, { username: "2–32 символа: латиница, цифры, _ . -" }); return; }
+    showFieldErrors(form, {});
+    const data = { display_name: name };
+    const loginChanged = login !== p.username;
+    if (loginChanged) data.username = login;
+    busy(e.submitter, async () => {
+      try {
+        const res = await api("PATCH", "/api/profile", data);
+        if (loginChanged && !p.aliases.some((a) => a.toLowerCase() === p.username.toLowerCase())
+            && p.username.toLowerCase() !== res.username.toLowerCase()) p.aliases.push(p.username);
+        p.aliases = p.aliases.filter((a) => a.toLowerCase() !== res.username.toLowerCase());
+        p.display_name = name;
+        p.username = res.username;
+        renderIdentity();
+        document.querySelectorAll(".user-chip-text strong").forEach((el) => { el.textContent = name; });
+        toast(loginChanged ? `Сохранено. Новый логин: @${res.username} — входите с ним` : "Сохранено");
+      } catch (ex) {
+        showFieldErrors(form, ex.fields);
+        toast(ex.message, "error");
+      }
+    });
+  });
+
+  renderIdentity();
 
   // ------------------------------------------------------------ каналы
 

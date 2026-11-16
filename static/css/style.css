@@ -132,6 +132,10 @@ kbd {
   background: var(--surface-3); border: 1px solid var(--border-strong); font-size: 12px; font-weight: 700; flex: none;
 }
 .avatar-xs { width: 20px; height: 20px; font-size: 10px; }
+.card-meta .avatar-xs { width: 16px; height: 16px; font-size: 9px; margin-right: 2px; }
+img.avatar { object-fit: cover; padding: 0; }
+.avatar-xl { width: 88px; height: 88px; font-size: 34px; border-width: 2px; }
+.avatar-row { display: flex; align-items: center; gap: 18px; flex-wrap: wrap; margin-bottom: 18px; }
 .user-chip-text { display: flex; flex-direction: column; line-height: 1.15; }
 .user-chip-text strong { font-size: 13px; font-weight: 600; }
 .user-chip-text small { color: var(--text-3); font-size: 11px; }
@@ -523,3 +527,15 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
+.m0 { margin: 0; }
+
+/* журнал действий */
+.nowrap { white-space: nowrap; }
+.block { display: block; }
+.audit-filters { margin: 8px 0 12px; }
+.audit-filters input { height: 32px; max-width: 280px; flex: 1 1 200px; font-size: 12.5px; }
+.audit-table td { vertical-align: top; }
+.audit-table .who small { display: block; color: var(--text-3); }
+.audit-details { word-break: break-word; max-width: 420px; }
+.audit-warn td { background: var(--danger-bg); }
+.audit-more { margin-top: 12px; justify-content: center; }

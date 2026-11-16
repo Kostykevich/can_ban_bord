@@ -33,6 +33,7 @@ class Base(unittest.TestCase):
             "SECRET_KEY": "test",
             "DATABASE": os.path.join(self.tmp, "test.db"),
             "UPLOAD_FOLDER": os.path.join(self.tmp, "uploads"),
+            "AVATAR_FOLDER": os.path.join(self.tmp, "avatars"),
             "NOTIFY_CAPTURE": True,
             "PUBLIC_URL": "http://test",
         })
@@ -305,6 +306,83 @@ class AdminTests(Base):
         self.assertEqual(r.status_code, 400)
         r = self.api(admin, "PATCH", "/api/admin/settings", {"board_title": "Баги Vektor", "done_visible_days": 7})
         self.assertEqual(r.get_json()["board_title"], "Баги Vektor")
+
+
+class ProfileTests(Base):
+    def test_username_change_keeps_old_mentions(self):
+        dev = self.client_for("dev")
+        tester = self.client_for("tester")
+        cid = self.create_card(tester)["id"]
+        r = self.api(dev, "PATCH", "/api/profile", {"username": "ivan_dev"})
+        self.assertEqual(r.get_json()["username"], "ivan_dev")
+        # Старый логин занят навсегда для других
+        r = self.api(tester, "PATCH", "/api/profile", {"username": "dev"})
+        self.assertEqual(r.status_code, 400)
+        admin = self.client_for("admin")
+        r = self.api(admin, "POST", "/api/admin/users", {"username": "DEV", "role": "tester", "password": "x" * 12})
+        self.assertEqual(r.status_code, 400)
+        # Упоминание по старому логину уведомляет того же человека
+        self.api(tester, "POST", f"/api/cards/{cid}/comments", {"body": "@dev посмотри"})
+        conn = connect(self.app.config["DATABASE"])
+        n = conn.execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND event = 'mention'",
+                         (self.ids["dev"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual(n, 1)
+        users = tester.get("/api/board").get_json()["users"]
+        me = [u for u in users if u["id"] == self.ids["dev"]][0]
+        self.assertEqual(me["aliases"], ["dev"])
+        # Вернул себе старый логин — псевдоним исчезает
+        self.api(dev, "PATCH", "/api/profile", {"username": "dev"})
+        me = [u for u in tester.get("/api/board").get_json()["users"] if u["id"] == self.ids["dev"]][0]
+        self.assertEqual(me["aliases"], ["ivan_dev"])
+
+    def test_avatar(self):
+        c = self.client_for("tester")
+        r = c.post("/api/profile/avatar", headers={"X-CSRF-Token": c.csrf},
+                   data={"file": (io.BytesIO(b"GIF89a" + b"\x00" * 20), "a.gif")})
+        self.assertEqual(r.status_code, 200)
+        url = r.get_json()["avatar"]
+        self.assertEqual(c.get(url).status_code, 200)
+        self.assertEqual(self.app.test_client().get(url).status_code, 302)
+        r = c.post("/api/profile/avatar", headers={"X-CSRF-Token": c.csrf},
+                   data={"file": (io.BytesIO(b"<svg onload=alert(1)>"), "a.svg")})
+        self.assertEqual(r.status_code, 415)
+        self.assertEqual(self.api(c, "DELETE", "/api/profile/avatar").status_code, 200)
+        self.assertEqual(c.get(url).status_code, 404)
+
+
+class AuditTests(Base):
+    def test_audit_log(self):
+        bad = self.app.test_client()
+        bad.get("/login")
+        bad.post("/login", data={"username": "tester", "password": "wrong", "csrf_token": self._csrf(bad)})
+        tester = self.client_for("tester")
+        cid = self.create_card(tester)["id"]
+        self.api(tester, "POST", f"/api/cards/{cid}/comments", {"body": "Секретный комментарий"})
+        admin = self.client_for("admin")
+        self.api(admin, "PATCH", f"/api/admin/users/{self.ids['dev']}", {"role": "tester"})
+
+        # не-админ журнал не видит
+        self.assertEqual(tester.get("/api/admin/audit").status_code, 403)
+
+        items = admin.get("/api/admin/audit").get_json()["items"]
+        actions = [x["action"] for x in items]
+        for a in ("auth.login_failed", "auth.login", "api.card_create", "api.comment_create", "admin.user_update"):
+            self.assertIn(a, actions)
+        upd = [x for x in items if x["action"] == "admin.user_update"][0]
+        self.assertIn("Разработчик → Тестер", upd["details"])
+        created = [x for x in items if x["action"] == "api.card_create"][0]
+        self.assertEqual(created["card_id"], cid)
+
+        only = admin.get(f"/api/admin/audit?user_id={self.ids['tester']}&group=cards").get_json()["items"]
+        self.assertTrue(only and all(x["user"]["id"] == self.ids["tester"] for x in only))
+        found = admin.get("/api/admin/audit?q=Секретный").get_json()["items"]
+        self.assertEqual(len(found), 1)
+
+        # Неудачный запрос (403) в журнал не попадает как успешное действие
+        before = len(admin.get("/api/admin/audit").get_json()["items"])
+        self.api(tester, "POST", f"/api/cards/{cid}/archive")
+        self.assertEqual(len(admin.get("/api/admin/audit").get_json()["items"]), before)
 
 
 class TelegramTests(Base):

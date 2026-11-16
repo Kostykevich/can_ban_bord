@@ -1,8 +1,9 @@
 """API администратора: пользователи, колонки, списки (приоритеты/категории/…), теги, настройки."""
 
-from flask import Blueprint, g, jsonify
+from flask import Blueprint, g, jsonify, request
 from werkzeug.security import generate_password_hash
 
+from . import audit as A
 from . import models as M
 from .api import body, clean_text, fail
 from .auth import MIN_PASSWORD, USERNAME_RE, admin_required
@@ -85,6 +86,7 @@ def user_create():
          discord_id, role, DEFAULT_EVENTS[role], utcnow()),
     )
     _changed(db)
+    A.details(f"@{username} — {ROLES[role]}")
     return users_list(), 201
 
 
@@ -128,6 +130,18 @@ def user_update(user_id):
         if did and db.execute("SELECT 1 FROM users WHERE discord_id = ? AND id != ?", (did, user_id)).fetchone():
             return fail("Этот Discord уже привязан к другому пользователю.", 409)
         updates["discord_id"] = did
+    changes = []
+    if "role" in updates and updates["role"] != user["role"]:
+        changes.append(f"роль: {ROLES[user['role']]} → {ROLES[updates['role']]}")
+    if "is_active" in updates and updates["is_active"] != user["is_active"]:
+        changes.append("включён" if updates["is_active"] else "отключён")
+    if "display_name" in updates and updates["display_name"] != user["display_name"]:
+        changes.append(f"имя: {user['display_name']} → {updates['display_name']}")
+    if "discord_id" in updates and updates["discord_id"] != user["discord_id"]:
+        changes.append(f"Discord ID: {user['discord_id'] or '—'} → {updates['discord_id'] or '—'}")
+    if new_username and new_username != user["username"]:
+        changes.append(f"логин: @{user['username']} → @{new_username}")
+    A.details(f"@{user['username']}" + (": " + ", ".join(changes) if changes else ""))
     if new_username and M.change_username(db, user_id, new_username):
         _changed(db)
     if updates:
@@ -145,8 +159,10 @@ def user_update(user_id):
 @bp.post("/users/<int:user_id>/password")
 def user_password(user_id):
     db = get_db()
-    if M.get_user(db, user_id) is None:
+    target = M.get_user(db, user_id)
+    if target is None:
         return fail("Пользователь не найден.", 404)
+    A.details(f"@{target['username']}")
     password = body().get("password") or ""
     if len(password) < MIN_PASSWORD or len(password) > 200:
         return fail(f"Пароль от {MIN_PASSWORD} символов.", 400, {"password": "Слишком короткий."})
@@ -210,6 +226,7 @@ def column_create():
         (values["name"], values["kind"], values["move_roles"], values.get("wip_limit"), pos, utcnow()),
     )
     _changed(db)
+    A.details(f"«{values['name']}»")
     return columns_list(), 201
 
 
@@ -222,6 +239,7 @@ def column_update(column_id):
     values, errors = _column_payload(db, body(), current)
     if errors:
         return fail("Проверьте поля.", 400, errors)
+    A.details(f"«{current['name']}»" + (f" → «{values['name']}»" if values.get("name") and values["name"] != current["name"] else ""))
     if values.get("kind") and values["kind"] != current["kind"]:
         if current["kind"] == "done":
             # Карточки в колонке перестанут считаться закрытыми
@@ -238,6 +256,9 @@ def column_update(column_id):
 
 @bp.post("/columns/<int:column_id>/move")
 def column_move(column_id):
+    col = M.get_column(get_db(), column_id)
+    if col:
+        A.details(f"«{col['name']}» {'влево' if body().get('direction') == -1 else 'вправо'}")
     return _reorder(get_db(), "board_columns", column_id, body().get("direction"), None) or columns_list()
 
 
@@ -265,6 +286,7 @@ def column_delete(column_id):
             M.log(db, c["id"], g.user["id"], "moved", "column", current["name"] + " (удалена)", target["name"])
     db.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
     _changed(db)
+    A.details(f"«{current['name']}»" + (f", {count} карточек перенесено в «{target['name']}»" if count else ""))
     return columns_list()
 
 
@@ -298,6 +320,7 @@ def option_create():
     pos = db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM options WHERE kind = ?", (kind,)).fetchone()[0]
     db.execute("INSERT INTO options (kind, name, position, created_at) VALUES (?, ?, ?, ?)", (kind, name, pos, utcnow()))
     _changed(db)
+    A.details(f"{OPTION_KINDS[kind]}: «{name}»")
     return options_list(), 201
 
 
@@ -326,15 +349,22 @@ def option_update(option_id):
             return fail("Должно остаться хотя бы одно активное значение.", 409)
         db.execute("UPDATE options SET is_active = ? WHERE id = ?", (active, option_id))
     _changed(db)
+    what = []
+    if "name" in data and name != opt["name"]:
+        what.append(f"→ «{name}»")
+    if "is_active" in data and active != opt["is_active"]:
+        what.append("включено" if active else "отключено")
+    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}» " + ", ".join(what))
     return options_list()
 
 
 @bp.post("/options/<int:option_id>/move")
 def option_move(option_id):
     db = get_db()
-    opt = db.execute("SELECT kind FROM options WHERE id = ?", (option_id,)).fetchone()
+    opt = db.execute("SELECT kind, name FROM options WHERE id = ?", (option_id,)).fetchone()
     if opt is None:
         return fail("Значение не найдено.", 404)
+    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}»")
     return _reorder(db, "options", option_id, body().get("direction"), opt["kind"]) or options_list()
 
 
@@ -355,6 +385,7 @@ def option_delete(option_id):
         return fail("Должно остаться хотя бы одно активное значение.", 409)
     db.execute("DELETE FROM options WHERE id = ?", (option_id,))
     _changed(db)
+    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}»")
     return options_list()
 
 
@@ -387,7 +418,8 @@ def tags_list():
 @bp.patch("/tags/<int:tag_id>")
 def tag_rename(tag_id):
     db = get_db()
-    if db.execute("SELECT 1 FROM tags WHERE id = ?", (tag_id,)).fetchone() is None:
+    old = db.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if old is None:
         return fail("Тег не найден.", 404)
     name = M.normalize_tag(body().get("name"))
     if not name:
@@ -395,6 +427,7 @@ def tag_rename(tag_id):
     if db.execute("SELECT 1 FROM tags WHERE name = ? AND id != ?", (name, tag_id)).fetchone():
         return fail("Такой тег уже есть.", 409)
     db.execute("UPDATE tags SET name = ? WHERE id = ?", (name, tag_id))
+    A.details(f"#{old['name']} → #{name}")
     db.execute("UPDATE cards SET updated_at = ? WHERE id IN (SELECT card_id FROM card_tags WHERE tag_id = ?)",
                (utcnow(), tag_id))
     _changed(db)
@@ -404,6 +437,9 @@ def tag_rename(tag_id):
 @bp.delete("/tags/<int:tag_id>")
 def tag_delete(tag_id):
     db = get_db()
+    tag = db.execute("SELECT name FROM tags WHERE id = ?", (tag_id,)).fetchone()
+    if tag:
+        A.details(f"#{tag['name']}")
     db.execute("UPDATE cards SET updated_at = ? WHERE id IN (SELECT card_id FROM card_tags WHERE tag_id = ?)",
                (utcnow(), tag_id))
     db.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
@@ -430,6 +466,7 @@ def settings_update():
     db = get_db()
     data = body()
     errors = {}
+    before = M.get_settings(db)
     for key in ("board_title", "board_subtitle"):
         if key in data:
             text = clean_text(data[key], LIMITS[key])
@@ -453,5 +490,54 @@ def settings_update():
     if errors:
         db.rollback()
         return fail("Проверьте поля.", 400, errors)
+    after = M.get_settings(db)
+    labels = {"board_title": "заголовок", "board_subtitle": "подзаголовок",
+              "done_visible_days": "дней показа закрытых", "channel_events": "события для канала Discord"}
+    A.details(", ".join(f"{label}: {before.get(k, '') or '—'} → {after.get(k, '') or '—'}"
+                        for k, label in labels.items() if before.get(k) != after.get(k)) or "без изменений")
     _changed(db)
     return settings_get()
+
+
+# ---------------------------------------------------------------- журнал действий
+
+@bp.get("/audit")
+def audit_list():
+    """Журнал: последние записи с фильтрами. before_id — для кнопки «Показать ещё»."""
+    db = get_db()
+    args = request.args
+    where, params = [], []
+    if args.get("user_id", type=int):
+        where.append("l.user_id = ?")
+        params.append(args.get("user_id", type=int))
+    group = args.get("group")
+    if group in A.GROUPS:
+        actions = [k for k, (grp, _) in A.ACTIONS.items() if grp == group]
+        where.append(f"l.action IN ({','.join('?' * len(actions))})")
+        params.extend(actions)
+    q = (args.get("q") or "").strip()[:100]
+    if q:
+        where.append("(l.details LIKE ? OR l.ip LIKE ? OR CAST(l.card_id AS TEXT) = ?)")
+        params.extend([f"%{q}%", f"%{q}%", q.lstrip("#")])
+    if args.get("before_id", type=int):
+        where.append("l.id < ?")
+        params.append(args.get("before_id", type=int))
+    sql = ("SELECT l.*, u.display_name, u.username, u.avatar, c.title AS card_title FROM audit_log l "
+           "LEFT JOIN users u ON u.id = l.user_id LEFT JOIN cards c ON c.id = l.card_id")
+    if where:
+        sql += " WHERE " + " AND ".join(where)
+    rows = db.execute(sql + " ORDER BY l.id DESC LIMIT 101", params).fetchall()
+    items = [{
+        "id": r["id"],
+        "action": r["action"],
+        "label": A.ACTIONS.get(r["action"], ("", r["action"]))[1],
+        "group": A.ACTIONS.get(r["action"], ("other", ""))[0],
+        "details": r["details"],
+        "card_id": r["card_id"],
+        "card_exists": r["card_title"] is not None,
+        "ip": r["ip"],
+        "created_at": r["created_at"],
+        "user": ({"id": r["user_id"], "name": r["display_name"], "username": r["username"],
+                  "avatar": M.avatar_url(r["avatar"])} if r["user_id"] else None),
+    } for r in rows[:100]]
+    return jsonify(items=items, has_more=len(rows) > 100, groups=A.GROUPS)

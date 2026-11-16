@@ -291,8 +291,25 @@ def _migration_2(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_aliases_user ON username_aliases(user_id)")
 
 
+def _migration_3(conn):
+    """Журнал действий для администратора. card_id без внешнего ключа —
+    запись остаётся, даже если карточку удалили навсегда."""
+    conn.execute(
+        "CREATE TABLE IF NOT EXISTS audit_log ("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,"
+        " action TEXT NOT NULL,"
+        " details TEXT NOT NULL DEFAULT '',"
+        " card_id INTEGER,"
+        " ip TEXT,"
+        " created_at TEXT NOT NULL)"
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_user ON audit_log(user_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
+
+
 # Новые миграции добавляются в конец списка. Старые никогда не меняются.
-MIGRATIONS = [_migration_1, _migration_2]
+MIGRATIONS = [_migration_1, _migration_2, _migration_3]
 
 
 def backup_file(db_path, reason):

@@ -150,6 +150,10 @@ class TelegramBot:
                         "telegram_link_expires = NULL, notify_telegram = 1 WHERE id = ?",
                         (chat_id, user["id"]),
                     )
+                    conn.execute(
+                        "INSERT INTO audit_log (user_id, action, details, created_at) VALUES (?, 'telegram.linked', ?, ?)",
+                        (user["id"], f"чат {chat_id}", utcnow()),
+                    )
             finally:
                 conn.close()
             return (f"Готово, <b>{html.escape(user['display_name'])}</b>! Уведомления Vektor RP "

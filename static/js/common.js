@@ -154,6 +154,20 @@ const V = (() => {
 
   // ------------------------------------------------------------ текст с @упоминаниями и ссылками
 
+  /* Аватарка: картинка, если загружена, иначе первая буква имени */
+  function avatarEl(user, extraClass = "") {
+    const cls = "avatar" + (extraClass ? " " + extraClass : "");
+    if (user && user.avatar) return h("img", { class: cls, src: user.avatar, alt: "", loading: "lazy" });
+    return h("span", { class: cls, "aria-hidden": "true" }, ((user && user.name) || "?")[0].toUpperCase());
+  }
+
+  /* Находит пользователя по логину — текущему или старому (после смены логина) */
+  function userByLogin(login) {
+    const l = login.toLowerCase();
+    return mentionUsers.find((u) => u.username.toLowerCase() === l)
+      || mentionUsers.find((u) => (u.aliases || []).some((a) => a.toLowerCase() === l));
+  }
+
   const RICH_RE = /(https?:\/\/[^\s<>"']+)|(^|[^\w@])@([A-Za-z0-9_.\-]{2,32})/g;
   function rich(text) {
     const frag = document.createDocumentFragment();
@@ -164,7 +178,9 @@ const V = (() => {
         frag.append(h("a", { href: url, target: "_blank", rel: "noopener noreferrer nofollow" }, url));
       } else {
         frag.append(document.createTextNode(pre));
-        frag.append(h("span", { class: "mention" }, "@" + name));
+        // старый логин показываем как текущий — упоминание не «ломается» после смены логина
+        const user = userByLogin(name);
+        frag.append(h("span", { class: "mention", title: user ? user.name : null }, "@" + (user ? user.username : name)));
       }
       last = offset + match.length;
       return match;
@@ -261,7 +277,7 @@ const V = (() => {
       menu.replaceChildren(...items.map((u, i) => h("li", {
         role: "option", "aria-selected": i === index ? "true" : "false",
         onmousedown: (e) => { e.preventDefault(); insert(u); },
-      }, h("span", { class: "avatar avatar-xs", "aria-hidden": "true" }, (u.name || "?")[0].toUpperCase()),
+      }, avatarEl(u, "avatar-xs"),
          h("span", null, u.name, " ", h("small", null, "@" + u.username)))));
     };
     textarea.addEventListener("input", () => {
@@ -367,6 +383,6 @@ const V = (() => {
     if (badge && !badge.hidden) setUnread(parseInt(badge.textContent, 10) || 0);
   });
 
-  return { $, $$, h, api, ApiError, busy, toast, BOOT, fullDate, relDate, timeEl, plural, rich,
+  return { $, $$, h, api, ApiError, busy, toast, BOOT, fullDate, relDate, timeEl, plural, rich, avatarEl,
            openModal, closeModal, confirmDialog, showFieldErrors, attachMentions, setMentionUsers, setUnread };
 })();

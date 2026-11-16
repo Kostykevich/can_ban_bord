@@ -33,7 +33,7 @@
       const login = [u.has_password ? "пароль" : null, u.discord_id ? "Discord" : null].filter(Boolean).join(" + ") || "—";
       return h("tr", { class: u.role === "pending" ? "is-pending" : "" },
         h("td", null, h("div", { class: "who" },
-          h("span", { class: "avatar", "aria-hidden": "true" }, (u.display_name || "?")[0].toUpperCase()),
+          V.avatarEl({ name: u.display_name, avatar: u.avatar }),
           h("div", null, h("strong", null, u.display_name, self ? " (вы)" : ""), h("small", null, "@" + u.username + (u.telegram ? " · Telegram ✓" : ""))))),
         h("td", null, login),
         h("td", null, role, u.role === "pending" ? h("div", { class: "small muted" }, "← выдайте роль") : null),

@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 
 from flask import Blueprint, current_app, g, jsonify, request
 
+from . import audit as A
 from . import models as M
 from . import notify as N
 from . import permissions as P
@@ -313,6 +314,8 @@ def card_create():
                    f"{who} создал(а) карточку")
     N.notify_channel(db, "created", card_id, title, f"🆕 Новая карточка от {who}")
     db.commit()
+    A.details(f"#{card_id} «{title}»")
+    g.audit_card_id = card_id
     return full_card_response(db, card_id, 201)
 
 
@@ -349,6 +352,7 @@ def card_update(card_id):
     forbidden = [FIELD_LABELS.get(f, f) for f in changed if f not in allowed]
     if forbidden:
         return fail("Нет прав менять: " + ", ".join(forbidden) + ".", 403)
+    A.details(f"«{card['title']}»: " + ", ".join(FIELD_LABELS.get(f, f).lower() for f in changed))
 
     for field, value in changed.items():
         if field == "tags":
@@ -427,6 +431,9 @@ def card_move(card_id):
     touch(db, card_id)
 
     M.log(db, card_id, g.user["id"], "moved", "column", source["name"], target["name"])
+    A.details(f"«{card['title']}»: {source['name']} → {target['name']}"
+              + (f", резолюция: {resolution['name']}" if resolution else "")
+              + (f", комментарий: {comment[:120]}" if comment else ""))
     if resolution:
         M.log(db, card_id, g.user["id"], "resolved", "resolution", None, resolution["name"])
     if auto_assigned:
@@ -483,6 +490,7 @@ def card_assign(card_id):
     touch(db, card_id)
     M.log(db, card_id, g.user["id"], "assigned", "assignee",
           M.display_name(db, card["assignee_id"]), M.display_name(db, new_id))
+    A.details(f"«{card['title']}»: {M.display_name(db, card['assignee_id'])} → {M.display_name(db, new_id)}")
     if new_id is not None:
         text = ("взял(а) задачу себе" if new_id == g.user["id"] else "назначил(а) вам задачу")
         N.notify_users(db, "assigned", card_id, card["title"], g.user, N.users_by_ids(db, [new_id]),
@@ -516,6 +524,7 @@ def comment_create(card_id):
     N.notify_users(db, "comment", card_id, card["title"], g.user, owners,
                    f"{g.user['display_name']}: {text[:200]}")
     db.commit()
+    A.details(f"«{card['title']}»: {text[:150]}")
     return full_card_response(db, card_id, 201)
 
 
@@ -573,6 +582,7 @@ def attachment_upload(card_id):
         (card_id, g.user["id"], stored, original, mime, len(data), utcnow()),
     )
     M.log(db, card_id, g.user["id"], "attachment", None, None, original)
+    A.details(original)
     db.execute("UPDATE cards SET updated_at = ? WHERE id = ?", (utcnow(), card_id))
     db.commit()
     return full_card_response(db, card_id, 201)
@@ -588,6 +598,8 @@ def attachment_delete(att_id):
         return fail("Удалить файл может только тот, кто его загрузил, или администратор.", 403)
     db.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
     M.log(db, att["card_id"], g.user["id"], "attachment_deleted", None, att["original_name"], None)
+    A.details(att["original_name"])
+    g.audit_card_id = att["card_id"]
     db.execute("UPDATE cards SET updated_at = ? WHERE id = ?", (utcnow(), att["card_id"]))
     db.commit()
     _remove_file(att["stored_name"])
@@ -649,6 +661,7 @@ def card_delete(card_id):
     files = [r["stored_name"] for r in db.execute("SELECT stored_name FROM attachments WHERE card_id = ?", (card_id,))]
     db.execute("DELETE FROM cards WHERE id = ?", (card_id,))
     db.commit()
+    A.details(f"«{card['title']}»")
     for name in files:
         _remove_file(name)
     return jsonify(ok=True)
@@ -727,8 +740,12 @@ def profile_update():
     if updates:
         sets = ", ".join(f"{k} = ?" for k in updates)
         db.execute(f"UPDATE users SET {sets} WHERE id = ?", (*updates.values(), g.user["id"]))
-    if new_username:
-        M.change_username(db, g.user["id"], new_username)
+        if updates.get("display_name") and updates["display_name"] != g.user["display_name"]:
+            A.details(f"имя: {g.user['display_name']} → {updates['display_name']}")
+        if "notify_events" in updates or "notify_discord" in updates or "notify_telegram" in updates:
+            A.details("настройки уведомлений")
+    if new_username and M.change_username(db, g.user["id"], new_username):
+        A.details(f"логин: @{g.user['username']} → @{new_username}")
     db.commit()
     return jsonify(ok=True, username=M.get_user(db, g.user["id"])["username"])
 
