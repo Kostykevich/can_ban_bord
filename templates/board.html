@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+{% block body_class %}page-board{% endblock %}
+{% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
+{% block content %}
+<section class="board-head" aria-labelledby="board-title">
+  <div class="board-head-text">
+    <h1 id="board-title">{{ site_settings.get('board_title', 'Доска задач') }}</h1>
+    <p class="muted">{{ site_settings.get('board_subtitle', '') }}</p>
+  </div>
+  <div class="board-head-actions">
+    <div class="view-switch" role="group" aria-label="Режим">
+      <button type="button" class="seg" data-view="board" aria-pressed="true">Доска</button>
+      <button type="button" class="seg" data-view="archive" aria-pressed="false">Архив</button>
+    </div>
+    <button type="button" class="btn btn-primary" id="create-btn" aria-keyshortcuts="N">
+      <span aria-hidden="true">＋</span> Создать карточку <kbd aria-hidden="true">N</kbd>
+    </button>
+  </div>
+</section>
+
+<section class="toolbar" aria-label="Поиск и фильтры">
+  <div class="search">
+    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true"><circle cx="11" cy="11" r="7" fill="none" stroke="currentColor" stroke-width="1.8"/><path d="m20 20-3.5-3.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+    <label for="search" class="sr-only">Поиск по названию, описанию или номеру</label>
+    <input id="search" type="search" placeholder="Поиск: название, описание, #номер" autocomplete="off" aria-keyshortcuts="/">
+    <kbd aria-hidden="true">/</kbd>
+  </div>
+
+  <div class="quick-tabs" role="group" aria-label="Быстрые фильтры" id="quick-tabs">
+    <button type="button" class="chip-btn" data-tab="all" aria-pressed="true">Все</button>
+    <button type="button" class="chip-btn" data-tab="mine" aria-pressed="false">Мои задачи</button>
+    <button type="button" class="chip-btn" data-tab="assigned" aria-pressed="false">Назначено мне</button>
+    <button type="button" class="chip-btn" data-tab="unassigned" aria-pressed="false">Без исполнителя</button>
+    <button type="button" class="chip-btn" data-tab="review" aria-pressed="false">Ждёт проверки</button>
+  </div>
+
+  <div class="filters">
+    <label class="sr-only" for="f-priority">Приоритет</label>
+    <select id="f-priority" data-filter="priority"><option value="">Любой приоритет</option></select>
+    <label class="sr-only" for="f-category">Категория</label>
+    <select id="f-category" data-filter="category"><option value="">Любая категория</option></select>
+    <label class="sr-only" for="f-assignee">Исполнитель</label>
+    <select id="f-assignee" data-filter="assignee"><option value="">Любой исполнитель</option></select>
+    <label class="sr-only" for="f-tag">Тег</label>
+    <select id="f-tag" data-filter="tag"><option value="">Любой тег</option></select>
+    <label class="sr-only" for="f-server">Сервер</label>
+    <select id="f-server" data-filter="server"><option value="">Любой сервер</option></select>
+    <button type="button" class="btn btn-ghost btn-sm" id="reset-filters" hidden>Сбросить</button>
+  </div>
+  <p class="result-count" id="result-count" aria-live="polite"></p>
+</section>
+
+<nav class="column-tabs" id="column-tabs" aria-label="Колонки"></nav>
+<section class="board" id="board" aria-label="Канбан-доска">
+  <p class="board-loading muted">Загрузка доски…</p>
+</section>
+<section class="archive" id="archive" hidden aria-label="Архив"></section>
+
+<p class="hotkeys muted small" aria-hidden="true">
+  <kbd>N</kbd> новая карточка · <kbd>/</kbd> поиск · <kbd>Esc</kbd> закрыть окно · доска обновляется автоматически
+</p>
+
+<!-- Подробности карточки -->
+<dialog class="modal modal-wide" id="details-modal" aria-labelledby="details-title">
+  <div class="modal-inner" id="details-body"></div>
+</dialog>
+
+<!-- Создание и редактирование -->
+<dialog class="modal modal-wide" id="form-modal" aria-labelledby="form-title">
+  <form class="modal-inner" id="card-form" novalidate>
+    <header class="modal-head">
+      <h2 id="form-title">Новая карточка</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <div class="draft-note" id="draft-note" hidden>
+      <span>Восстановлен черновик.</span>
+      <button type="button" class="link-btn" id="draft-clear">Очистить форму</button>
+    </div>
+    <p class="form-error" id="form-error" role="alert" hidden></p>
+
+    <div class="form-grid">
+      <div class="field field-full">
+        <label for="cf-title">Название <span class="req" aria-hidden="true">*</span></label>
+        <input id="cf-title" name="title" required maxlength="150" placeholder="Коротко: что сломалось и где">
+        <p class="hint" data-error-for="title"></p>
+        <div class="similar" id="similar" hidden aria-live="polite"></div>
+      </div>
+
+      <div class="field field-full">
+        <label for="cf-description">Описание <span class="req" aria-hidden="true">*</span></label>
+        <textarea id="cf-description" name="description" required maxlength="5000" rows="4" data-mentions
+                  placeholder="Что происходит? Можно упомянуть человека: @логин"></textarea>
+        <p class="hint" data-error-for="description"></p>
+      </div>
+
+      <div class="field field-full">
+        <label for="cf-steps">Шаги воспроизведения</label>
+        <textarea id="cf-steps" name="steps" maxlength="5000" rows="4"></textarea>
+        <p class="hint" data-error-for="steps"></p>
+      </div>
+
+      <div class="field">
+        <label for="cf-expected">Ожидаемый результат</label>
+        <textarea id="cf-expected" name="expected" maxlength="2000" rows="2"></textarea>
+      </div>
+      <div class="field">
+        <label for="cf-actual">Фактический результат</label>
+        <textarea id="cf-actual" name="actual" maxlength="2000" rows="2"></textarea>
+      </div>
+
+      <div class="field">
+        <label for="cf-priority">Приоритет</label>
+        <select id="cf-priority" name="priority_id"></select>
+      </div>
+      <div class="field">
+        <label for="cf-category">Категория</label>
+        <select id="cf-category" name="category_id"></select>
+      </div>
+      <div class="field">
+        <label for="cf-server">Сервер</label>
+        <select id="cf-server" name="server_id"></select>
+      </div>
+      <div class="field">
+        <label for="cf-frequency">Как часто повторяется</label>
+        <select id="cf-frequency" name="frequency"></select>
+      </div>
+
+      <div class="field">
+        <label for="cf-build">Версия сборки</label>
+        <input id="cf-build" name="build_version" maxlength="50" placeholder="например 1.4.2">
+      </div>
+      <div class="field">
+        <label for="cf-coords">Координаты <span class="muted">(/coords)</span></label>
+        <input id="cf-coords" name="coords" maxlength="100" placeholder="x, y, z">
+      </div>
+      <div class="field">
+        <label for="cf-static">Static ID персонажа</label>
+        <input id="cf-static" name="static_id" maxlength="30">
+      </div>
+      <div class="field">
+        <label for="cf-occurred">Когда произошло <span class="muted">(МСК)</span></label>
+        <input id="cf-occurred" name="occurred_at" type="datetime-local">
+      </div>
+
+      <div class="field field-full">
+        <label for="cf-video">Ссылка на видео</label>
+        <input id="cf-video" name="video_url" type="url" maxlength="500" placeholder="https://youtu.be/… или Medal, Streamable">
+        <p class="hint" data-error-for="video_url"></p>
+      </div>
+
+      <div class="field field-full">
+        <label for="cf-tag-input">Теги</label>
+        <div class="tag-input" id="cf-tags">
+          <ul class="tag-chips" id="cf-tag-chips"></ul>
+          <input id="cf-tag-input" list="tag-suggestions" maxlength="30"
+                 placeholder="Введите тег и нажмите Enter — новый тег создастся сам">
+          <datalist id="tag-suggestions"></datalist>
+        </div>
+        <p class="hint" data-error-for="tags"></p>
+      </div>
+
+      <div class="field" id="cf-assignee-field" hidden>
+        <label for="cf-assignee">Исполнитель</label>
+        <select id="cf-assignee" name="assignee_id"></select>
+        <p class="hint" data-error-for="assignee_id"></p>
+      </div>
+
+      <div class="field field-full" id="cf-files-field">
+        <span class="label">Скриншоты</span>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button"
+             aria-describedby="dropzone-hint">
+          <p><strong>Ctrl + V</strong> — вставить скриншот из буфера, или нажмите, чтобы выбрать файл</p>
+          <p class="muted small" id="dropzone-hint">PNG, JPG, GIF, WebP · до 5 МБ · не больше 10 штук</p>
+          <input type="file" id="file-input" accept="image/png,image/jpeg,image/gif,image/webp" multiple hidden>
+        </div>
+        <ul class="thumbs" id="pending-files"></ul>
+      </div>
+    </div>
+
+    <footer class="modal-foot">
+      <span class="muted small" id="form-hint">Черновик сохраняется автоматически</span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary" id="form-submit">Создать</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<!-- Перенос с комментарием/резолюцией -->
+<dialog class="modal" id="move-modal" aria-labelledby="move-title">
+  <form class="modal-inner" id="move-form" novalidate>
+    <header class="modal-head">
+      <h2 id="move-title">Перенос карточки</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="muted" id="move-desc"></p>
+    <p class="form-error" id="move-error" role="alert" hidden></p>
+    <div class="field" id="move-resolution-field">
+      <label for="move-resolution">Резолюция <span class="req" aria-hidden="true">*</span></label>
+      <select id="move-resolution"></select>
+    </div>
+    <div class="field">
+      <label for="move-comment" id="move-comment-label">Комментарий</label>
+      <textarea id="move-comment" rows="4" maxlength="3000" data-mentions></textarea>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary" id="move-submit">Перенести</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<!-- Подтверждение опасных действий -->
+<dialog class="modal modal-sm" id="confirm-modal" aria-labelledby="confirm-title">
+  <div class="modal-inner">
+    <h2 id="confirm-title">Вы уверены?</h2>
+    <p id="confirm-text" class="muted"></p>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Подтвердить</button>
+      </div>
+    </footer>
+  </div>
+</dialog>
+
+<!-- Просмотр изображения -->
+<dialog class="modal modal-image" id="image-modal" aria-label="Просмотр изображения">
+  <button type="button" class="icon-btn image-close" data-close aria-label="Закрыть">✕</button>
+  <img id="image-full" alt="">
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/board.js') }}"></script>{% endblock %}

@@ -1,0 +1,126 @@
+{% extends "base.html" %}
+{% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
+{% block content %}
+<div class="page-wide">
+  <h1>Настройки доски</h1>
+
+  <div class="tabs" role="tablist" aria-label="Разделы настроек" id="settings-tabs">
+    <button type="button" role="tab" id="tab-columns" aria-controls="panel-columns" aria-selected="true">Колонки</button>
+    <button type="button" role="tab" id="tab-lists" aria-controls="panel-lists" aria-selected="false" tabindex="-1">Списки</button>
+    <button type="button" role="tab" id="tab-tags" aria-controls="panel-tags" aria-selected="false" tabindex="-1">Теги</button>
+    <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="false" tabindex="-1">Общие</button>
+  </div>
+
+  <section role="tabpanel" id="panel-columns" aria-labelledby="tab-columns" class="panel">
+    <div class="page-title-row">
+      <h2>Колонки доски</h2>
+      <button type="button" class="btn btn-primary btn-sm" id="add-column">＋ Колонка</button>
+    </div>
+    <p class="muted small">Порядок колонок — слева направо. Тип колонки задаёт её поведение. Администратор может переносить карточки в любую колонку.</p>
+    <ul class="settings-list" id="columns-list"></ul>
+  </section>
+
+  <section role="tabpanel" id="panel-lists" aria-labelledby="tab-lists" class="panel" hidden>
+    <h2>Списки значений</h2>
+    <p class="muted small">Приоритеты: сверху — самый важный. Отключённое значение пропадает из форм, но остаётся у старых карточек.</p>
+    <div class="lists-grid" id="lists-grid"></div>
+  </section>
+
+  <section role="tabpanel" id="panel-tags" aria-labelledby="tab-tags" class="panel" hidden>
+    <h2>Теги</h2>
+    <p class="muted small">Теги создают сами участники прямо в карточках. Здесь их можно переименовать или удалить.</p>
+    <ul class="settings-list" id="tags-list"></ul>
+  </section>
+
+  <section role="tabpanel" id="panel-general" aria-labelledby="tab-general" class="panel" hidden>
+    <h2>Общие</h2>
+    <form id="general-form" class="form-stack" novalidate>
+      <div class="field">
+        <label for="g-title">Заголовок доски</label>
+        <input id="g-title" maxlength="60" required>
+      </div>
+      <div class="field">
+        <label for="g-subtitle">Подзаголовок</label>
+        <input id="g-subtitle" maxlength="200">
+      </div>
+      <div class="field">
+        <label for="g-days">Сколько дней показывать закрытые задачи на доске (дальше — в архиве)</label>
+        <input id="g-days" type="number" min="1" max="365" required>
+      </div>
+      <fieldset class="checks" id="g-channel-events">
+        <legend>Что отправлять в общий канал Discord</legend>
+      </fieldset>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+  </section>
+</div>
+
+<dialog class="modal" id="column-modal" aria-labelledby="column-modal-title">
+  <form class="modal-inner" id="column-form" novalidate>
+    <header class="modal-head">
+      <h2 id="column-modal-title">Колонка</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="form-error" id="column-error" role="alert" hidden></p>
+    <div class="form-stack">
+      <div class="field">
+        <label for="c-name">Название</label>
+        <input id="c-name" maxlength="40" required>
+      </div>
+      <div class="field">
+        <label for="c-kind">Тип</label>
+        <select id="c-kind"></select>
+      </div>
+      <fieldset class="checks">
+        <legend>Кто может переносить карточки В эту колонку</legend>
+        <label class="check"><input type="checkbox" value="tester" name="c-roles"> Тестеры</label>
+        <label class="check"><input type="checkbox" value="developer" name="c-roles"> Разработчики</label>
+      </fieldset>
+      <div class="field">
+        <label for="c-wip">Лимит задач в колонке <span class="muted">(пусто — без лимита)</span></label>
+        <input id="c-wip" type="number" min="1" max="999">
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="modal modal-sm" id="delete-column-modal" aria-labelledby="dc-title">
+  <form class="modal-inner" id="delete-column-form" novalidate>
+    <h2 id="dc-title">Удалить колонку?</h2>
+    <p class="muted" id="dc-text"></p>
+    <div class="field" id="dc-target-field">
+      <label for="dc-target">Куда перенести карточки</label>
+      <select id="dc-target"></select>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-danger">Удалить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="modal modal-sm" id="confirm-modal" aria-labelledby="confirm-title">
+  <div class="modal-inner">
+    <h2 id="confirm-title">Вы уверены?</h2>
+    <p id="confirm-text" class="muted"></p>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="button" class="btn btn-danger" id="confirm-ok">Подтвердить</button>
+      </div>
+    </footer>
+  </div>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/admin_settings.js') }}"></script>{% endblock %}

@@ -1,0 +1,92 @@
+{% extends "base.html" %}
+{% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
+{% block content %}
+<div class="page-wide">
+  <div class="page-title-row">
+    <h1>Пользователи</h1>
+    <button type="button" class="btn btn-primary" id="add-user-btn">＋ Добавить пользователя</button>
+  </div>
+  <p class="muted">Кто вошёл через Discord впервые, попадает сюда со статусом «Ожидает доступа» — выдайте ему роль.</p>
+
+  <div class="table-wrap">
+    <table class="table" id="users-table">
+      <thead>
+        <tr>
+          <th scope="col">Пользователь</th>
+          <th scope="col">Вход</th>
+          <th scope="col">Роль</th>
+          <th scope="col">Активен</th>
+          <th scope="col">Последний вход</th>
+          <th scope="col"><span class="sr-only">Действия</span></th>
+        </tr>
+      </thead>
+      <tbody></tbody>
+    </table>
+  </div>
+</div>
+
+<dialog class="modal" id="user-modal" aria-labelledby="user-modal-title">
+  <form class="modal-inner" id="user-form" novalidate>
+    <header class="modal-head">
+      <h2 id="user-modal-title">Пользователь</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="form-error" id="user-error" role="alert" hidden></p>
+    <div class="form-stack">
+      <div class="field">
+        <label for="u-username">Логин (для входа и @упоминаний)</label>
+        <input id="u-username" maxlength="32" autocomplete="off">
+        <p class="hint" data-error-for="username"></p>
+      </div>
+      <div class="field">
+        <label for="u-display">Отображаемое имя</label>
+        <input id="u-display" maxlength="50" autocomplete="off">
+      </div>
+      <div class="field">
+        <label for="u-role">Роль</label>
+        <select id="u-role"></select>
+        <p class="hint" data-error-for="role"></p>
+      </div>
+      <div class="field">
+        <label for="u-discord">Discord ID <span class="muted">(необязательно — для входа через Discord и уведомлений)</span></label>
+        <input id="u-discord" inputmode="numeric" maxlength="25" autocomplete="off">
+        <p class="hint" data-error-for="discord_id"></p>
+      </div>
+      <div class="field" id="u-password-field">
+        <label for="u-password">Пароль <span class="muted">(от 10 символов; можно пусто, если указан Discord ID)</span></label>
+        <input id="u-password" type="password" autocomplete="new-password">
+        <p class="hint" data-error-for="password"></p>
+      </div>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary" id="user-submit">Сохранить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="modal modal-sm" id="pass-modal" aria-labelledby="pass-title">
+  <form class="modal-inner" id="pass-form" novalidate>
+    <header class="modal-head">
+      <h2 id="pass-title">Новый пароль</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="muted" id="pass-desc"></p>
+    <div class="field">
+      <label for="pass-input">Пароль (от 10 символов)</label>
+      <input id="pass-input" type="password" autocomplete="new-password" minlength="10">
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/admin_users.js') }}"></script>{% endblock %}

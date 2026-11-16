@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Вход{% endblock %}
+{% block body_class %}page-auth{% endblock %}
+{% block content %}
+<section class="auth-card" aria-labelledby="login-title">
+  <div class="auth-brand">
+    <span class="brand-mark brand-mark-lg" aria-hidden="true">V</span>
+    <div>
+      <strong>VEKTOR RP</strong>
+      <small>Панель команды</small>
+    </div>
+  </div>
+  <h1 id="login-title">Вход</h1>
+  <p class="muted">Доска задач доступна только участникам команды.</p>
+
+  {% if discord_enabled %}
+  <a class="btn btn-discord btn-block" href="{{ url_for('auth.discord_start') }}">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path fill="currentColor" d="M20.3 4.4A19.8 19.8 0 0 0 15.4 3l-.6 1.3a18.4 18.4 0 0 0-5.6 0L8.6 3a19.7 19.7 0 0 0-4.9 1.4C.6 9 .1 13.5.3 18a19.9 19.9 0 0 0 6 3l1.3-2.1-2-1 .5-.4a14.2 14.2 0 0 0 12 0l.5.4-2 1 1.3 2.1a19.8 19.8 0 0 0 6-3c.4-5.2-.8-9.7-3.6-13.6ZM8.5 15.3c-1.2 0-2.1-1.1-2.1-2.4s.9-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4Zm7 0c-1.2 0-2.1-1.1-2.1-2.4s.9-2.4 2.1-2.4 2.2 1.1 2.1 2.4c0 1.3-.9 2.4-2.1 2.4Z"/></svg>
+    Войти через Discord
+  </a>
+  <div class="divider"><span>или по логину</span></div>
+  {% endif %}
+
+  {% if error %}<p class="form-error" role="alert">{{ error }}</p>{% endif %}
+
+  <form method="post" class="form-stack" novalidate>
+    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+    <div class="field">
+      <label for="username">Логин</label>
+      <input id="username" name="username" autocomplete="username" required maxlength="32" value="{{ username }}" autofocus>
+    </div>
+    <div class="field">
+      <label for="password">Пароль</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required maxlength="200">
+    </div>
+    <button type="submit" class="btn btn-primary btn-block">Войти</button>
+  </form>
+  <p class="muted small">Нет аккаунта? Попросите администратора добавить вас{% if discord_enabled %} или войдите через Discord и дождитесь выдачи доступа{% endif %}.</p>
+</section>
+{% endblock %}

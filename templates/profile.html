@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
+{% block content %}
+<div class="page-narrow">
+  <h1>Профиль</h1>
+
+  <section class="panel" aria-labelledby="p-main">
+    <h2 id="p-main">Основное</h2>
+    <form id="profile-form" class="form-stack" novalidate>
+      <div class="field">
+        <label for="p-name">Отображаемое имя</label>
+        <input id="p-name" maxlength="50" required>
+      </div>
+      <p class="muted small">Логин для упоминаний: <code id="p-username"></code> — в комментариях пишите <code id="p-mention"></code></p>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+  </section>
+
+  <section class="panel" aria-labelledby="p-channels">
+    <h2 id="p-channels">Куда присылать уведомления</h2>
+    <p class="muted small">Уведомления на сайте (колокольчик) приходят всегда. Здесь — дополнительные каналы.</p>
+
+    <div class="channel" id="ch-discord">
+      <div class="channel-info">
+        <strong>Discord — личные сообщения от бота</strong>
+        <span class="muted small" id="ch-discord-status"></span>
+      </div>
+      <div class="row-gap" id="ch-discord-actions"></div>
+    </div>
+
+    <div class="channel" id="ch-telegram">
+      <div class="channel-info">
+        <strong>Telegram</strong>
+        <span class="muted small" id="ch-telegram-status"></span>
+      </div>
+      <div class="row-gap" id="ch-telegram-actions"></div>
+    </div>
+
+    <button type="button" class="btn btn-ghost btn-sm" id="test-notify">Отправить тестовое уведомление</button>
+  </section>
+
+  <section class="panel" aria-labelledby="p-events">
+    <h2 id="p-events">О чём уведомлять</h2>
+    <form id="events-form" class="form-stack">
+      <fieldset class="checks" id="events-list">
+        <legend class="sr-only">События</legend>
+      </fieldset>
+      <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+  </section>
+
+  <section class="panel" aria-labelledby="p-pass">
+    <h2 id="p-pass">Пароль для входа по логину</h2>
+    <form id="password-form" class="form-stack" novalidate>
+      <div class="field" id="p-current-field">
+        <label for="p-current">Текущий пароль</label>
+        <input id="p-current" type="password" autocomplete="current-password">
+      </div>
+      <div class="field">
+        <label for="p-new">Новый пароль <span class="muted">(от 10 символов)</span></label>
+        <input id="p-new" type="password" autocomplete="new-password" minlength="10">
+      </div>
+      <button type="submit" class="btn btn-primary">Сменить пароль</button>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='js/profile.js') }}"></script>{% endblock %}
