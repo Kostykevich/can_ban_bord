@@ -22,7 +22,26 @@ USER_AGENT = "DiscordBot (https://localhost, 1.0) VektorKanban"
 
 
 class DiscordError(Exception):
-    pass
+    """kind: network — нет связи с Discord; auth — неверные ключи/токен;
+    grant — код входа не подошёл (redirect URI, устаревший код); other — прочее."""
+
+    def __init__(self, message, kind="other", status=None):
+        super().__init__(message)
+        self.kind = kind
+        self.status = status
+
+
+def _proxy_url():
+    """Прокси для связи с Discord, если хостинг его блокирует (HTTPS_PROXY в .env)."""
+    return (os.environ.get("DISCORD_PROXY") or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy") or "").strip()
+
+
+def _opener():
+    proxy = _proxy_url()
+    if proxy:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
+    return urllib.request.build_opener()
 
 
 def _http(method, url, payload=None, headers=None, form=False):
@@ -36,25 +55,40 @@ def _http(method, url, payload=None, headers=None, form=False):
         else:
             data = json.dumps(payload).encode()
             headers["Content-Type"] = "application/json"
+    opener = _opener()
     for attempt in range(2):
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
+            with opener.open(req, timeout=15) as resp:
                 body = resp.read()
                 return json.loads(body) if body else {}
         except urllib.error.HTTPError as err:
+            raw = err.read()
             if err.code == 429 and attempt == 0:
                 try:
-                    retry = float(json.loads(err.read()).get("retry_after", 1))
+                    retry = float(json.loads(raw).get("retry_after", 1))
                 except Exception:
                     retry = 1.0
                 time.sleep(min(retry, 10))
                 continue
-            detail = err.read()[:300].decode("utf-8", "replace")
-            raise DiscordError(f"Discord API {err.code}: {detail}") from None
-        except urllib.error.URLError as err:
-            raise DiscordError(f"Discord недоступен: {err.reason}") from None
-    raise DiscordError("Discord: слишком много запросов")
+            detail = raw[:300].decode("utf-8", "replace")
+            try:
+                code = json.loads(raw).get("error", "")
+            except Exception:
+                code = ""
+            if err.code == 401 or code == "invalid_client":
+                kind = "auth"
+            elif code == "invalid_grant":
+                kind = "grant"
+            elif err.code == 403 and b"cloudflare" in raw.lower():
+                kind = "network"  # Cloudflare заблокировал IP сервера
+            else:
+                kind = "other"
+            raise DiscordError(f"Discord API {err.code}: {detail}", kind, err.code) from None
+        except (urllib.error.URLError, TimeoutError, OSError) as err:
+            reason = getattr(err, "reason", err)
+            raise DiscordError(f"Нет связи с Discord: {reason}", "network") from None
+    raise DiscordError("Discord: слишком много запросов", "other", 429)
 
 
 # ---------------------------------------------------------------- OAuth2 (вход)
@@ -135,7 +169,8 @@ class DiscordBot:
                 self.online = False
                 return
             except Exception as err:  # сеть пропала и т.п. — переподключаемся
-                log(f"[Discord] Соединение потеряно ({err.__class__.__name__}), переподключение через {delay} с")
+                log(f"[Discord] Нет соединения с Discord ({err.__class__.__name__}: {str(err)[:150]}), "
+                    f"переподключение через {delay} с")
             self.online = False
             time.sleep(delay)
             delay = min(delay * 2, 120)
@@ -206,7 +241,11 @@ class _WebSocket:
     """Минимальный WebSocket-клиент (RFC 6455) поверх ssl-сокета."""
 
     def __init__(self, host, path):
-        raw = socket.create_connection((host, 443), timeout=15)
+        proxy = _proxy_url()
+        if proxy:
+            raw = self._via_proxy(proxy, host)
+        else:
+            raw = socket.create_connection((host, 443), timeout=15)
         self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall((
@@ -224,6 +263,28 @@ class _WebSocket:
         if b" 101 " not in head.split(b"\r\n", 1)[0]:
             raise ConnectionError("Gateway отказал в подключении")
         self.fragments = b""
+
+    @staticmethod
+    def _via_proxy(proxy, host):
+        """Туннель через HTTP-прокси (метод CONNECT). Поддерживается http://логин:пароль@адрес:порт."""
+        parts = urllib.parse.urlsplit(proxy if "://" in proxy else "http://" + proxy)
+        if parts.scheme not in ("http", "https"):
+            raise _FatalGateway("поддерживается только HTTP-прокси (http://адрес:порт)")
+        sock = socket.create_connection((parts.hostname, parts.port or 8080), timeout=15)
+        head = f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
+        if parts.username:
+            cred = f"{urllib.parse.unquote(parts.username)}:{urllib.parse.unquote(parts.password or '')}"
+            head += "Proxy-Authorization: Basic " + base64.b64encode(cred.encode()).decode() + "\r\n"
+        sock.sendall((head + "\r\n").encode())
+        resp = b""
+        while b"\r\n\r\n" not in resp:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise ConnectionError("прокси закрыл соединение")
+            resp += chunk
+        if b" 200" not in resp.split(b"\r\n", 1)[0]:
+            raise ConnectionError("прокси отказал: " + resp.split(b"\r\n", 1)[0].decode("latin-1"))
+        return sock
 
     def _send(self, opcode, payload):
         header = bytes([0x80 | opcode])

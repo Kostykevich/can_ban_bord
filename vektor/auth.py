@@ -246,8 +246,17 @@ def discord_callback():
         info = discord_api.oauth_fetch_user(cfg["DISCORD_CLIENT_ID"], cfg["DISCORD_CLIENT_SECRET"],
                                             cfg["DISCORD_REDIRECT_URI"], request.args["code"])
     except discord_api.DiscordError as err:
-        current_app.logger.warning("Discord OAuth: %s", err)
-        flash("Discord не ответил. Попробуйте позже.", "error")
+        print(f"[Discord] Ошибка входа ({err.kind}): {err}")
+        messages = {
+            "network": "Сервер сайта не может связаться с Discord. Похоже, хостинг блокирует Discord — "
+                       "администратору нужно указать прокси (DISCORD_PROXY в .env). "
+                       "Проверка: scripts\\check_discord.py",
+            "auth": "Discord отклонил ключи приложения: неверный DISCORD_CLIENT_ID или DISCORD_CLIENT_SECRET. "
+                    "Администратору: скопируйте секрет заново (OAuth2 → Reset Secret) и перезапустите сайт.",
+            "grant": "Discord не принял код входа. Чаще всего DISCORD_REDIRECT_URI в .env не совпадает "
+                     "с Redirect в Developer Portal символ в символ. Или код устарел — попробуйте ещё раз.",
+        }
+        flash(messages.get(err.kind, f"Discord вернул ошибку ({err.status or '?'}). Попробуйте позже."), "error")
         return redirect(url_for("auth.login"))
 
     discord_id = str(info["id"])

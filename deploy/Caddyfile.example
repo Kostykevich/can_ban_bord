@@ -1,6 +1,9 @@
 # Caddy: HTTPS и проксирование на приложение.
 # Скопируйте в C:\caddy\Caddyfile и замените домен на свой.
 # Caddy сам получит и будет продлевать сертификат Let's Encrypt.
+#
+# Что менять: ТОЛЬКО домен в строке ниже (ту же строку, что в ALLOWED_HOSTS в .env).
+# 127.0.0.1:8000 не трогайте — это HOST и PORT из .env.
 
 kanban.example.ru {
 	encode gzip

@@ -135,9 +135,12 @@ py -3.12 -m venv .venv
 ## Шаг 7. Настроить `.env`
 
 ```powershell
-Copy-Item .env.example .env
+Copy-Item deploy\vds.env.example .env
 notepad .env
 ```
+
+> 💡 В `deploy\vds.env.example` уже стоят все серверные настройки и есть пометки, что куда вписывать.
+> **IP сервера в `.env` не пишется**, только домен. `HOST=127.0.0.1` и `PORT=8000` не меняйте.
 
 Сгенерируйте **новый** секретный ключ (не тот, что на вашем ПК):
 
@@ -327,6 +330,10 @@ Start-ScheduledTask -TaskName "Vektor Kanban"
 | Ошибка сертификата | DNS ещё не обновился или порт 80 занят IIS (шаг 4). Лог: `C:\caddy\logs` |
 | `400 Bad Request` при входе на сайт | Домен не совпадает с `ALLOWED_HOSTS` в `.env` |
 | После входа снова страница входа | В `.env` стоит `HTTPS=1`, а сайт открыт по `http://`. Открывайте по `https://` |
+| Любая ошибка Discord (вход, бот, уведомления) | Сначала запустите `.\.venv\Scripts\python.exe scripts\check_discord.py`: он покажет точную причину |
+| «Сервер сайта не может связаться с Discord» | Хостинг блокирует Discord (частая ситуация с VDS в РФ). Варианты: VDS вне РФ или HTTP-прокси в `.env`: `DISCORD_PROXY=http://логин:пароль@адрес:порт`, затем перезапуск сайта |
+| «Discord отклонил ключи приложения» | Неверный Client Secret. Developer Portal → OAuth2 → Reset Secret → вставьте в `.env` без пробелов → перезапуск |
+| «Discord не принял код входа» | `DISCORD_REDIRECT_URI` не совпадает с Redirect в Developer Portal (http/https, слеш в конце, домен) |
 | Discord: `Invalid OAuth2 redirect_uri` | Адрес в `DISCORD_REDIRECT_URI` не совпадает **символ в символ** с Redirect в Discord Developer Portal |
 | Discord-бот не пишет в личку | У человека нет общего сервера с ботом, закрыты ЛС от участников сервера или не привязан Discord в профиле |
 | В логе `Telegram … 409` | Бот запущен где-то ещё (например на вашем ПК). Остановите вторую копию |
