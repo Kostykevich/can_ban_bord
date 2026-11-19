@@ -2,15 +2,19 @@
   Создаёт задачи Планировщика Windows для VDS:
     - "Vektor Kanban" — сайт (Waitress), стартует при включении сервера;
     - "Caddy"         — HTTPS-прокси, стартует при включении сервера;
-    - "Vektor Backup" — резервная копия базы каждый день в 04:00.
+    - "Vektor Backup" — резервная копия базы каждый день в 04:00;
+    - "Vektor Watchdog" — каждые 5 минут поднимает Caddy и сайт, если они упали;
+    - "Vektor AutoDeploy" — каждую минуту проверяет GitHub и выкладывает новую версию.
   Задачи работают, даже если никто не вошёл в систему, и перезапускаются при сбое.
 
   Запуск (PowerShell ОТ ИМЕНИ АДМИНИСТРАТОРА), из папки проекта:
       powershell -ExecutionPolicy Bypass -File deploy\install-tasks.ps1
+  Без автодеплоя:  ... -File deploy\install-tasks.ps1 -NoAutoDeploy
 
   Повторный запуск безопасен: задачи пересоздаются.
 #>
 param(
+    [switch]$NoAutoDeploy,
     [string]$ProjectDir = (Split-Path -Parent $PSScriptRoot),
     [string]$CaddyDir = "C:\caddy"
 )
@@ -68,7 +72,9 @@ $appAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $appCmd -Worki
 Register-VektorTask "Vektor Kanban" $appAction $atStartup $settings
 
 # Caddy
-$caddyAction = New-ScheduledTaskAction -Execute $caddyExe -Argument "run --config `"$caddyFile`"" -WorkingDirectory $CaddyDir
+# Вывод Caddy (ошибки сертификата, падения) пишется в C:\caddy\logs\caddy.log
+$caddyCmd = "/c `"`"$caddyExe`" run --config `"$caddyFile`" >> `"$CaddyDir\logs\caddy.log`" 2>&1`""
+$caddyAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $caddyCmd -WorkingDirectory $CaddyDir
 Register-VektorTask "Caddy" $caddyAction $atStartup $settings
 
 # Резервная копия раз в день
@@ -76,6 +82,29 @@ $backupCmd = "/c set PYTHONIOENCODING=utf-8&& `"$python`" scripts\backup_db.py >
 $backupAction = New-ScheduledTaskAction -Execute "cmd.exe" -Argument $backupCmd -WorkingDirectory $ProjectDir
 $daily = New-ScheduledTaskTrigger -Daily -At 4am
 Register-VektorTask "Vektor Backup" $backupAction $daily (New-ScheduledTaskSettingsSet -StartWhenAvailable)
+
+# Сторож каждые 5 минут: поднимает Caddy и сайт, если они упали
+$watchCmd = "-NoProfile -ExecutionPolicy Bypass -File `"$ProjectDir\deploy\watchdog.ps1`""
+$watchAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $watchCmd -WorkingDirectory $ProjectDir
+$every5 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(2) -RepetitionInterval (New-TimeSpan -Minutes 5)
+$watchSettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 3)
+Register-VektorTask "Vektor Watchdog" $watchAction @($every5, $atStartup) $watchSettings
+
+# Автодеплой каждую минуту: новая версия из GitHub -> тесты -> перезапуск (или откат)
+if ($NoAutoDeploy) {
+    if (Get-ScheduledTask -TaskName "Vektor AutoDeploy" -ErrorAction SilentlyContinue) {
+        Unregister-ScheduledTask -TaskName "Vektor AutoDeploy" -Confirm:$false
+    }
+    Write-Host "Автодеплой выключен (-NoAutoDeploy)" -ForegroundColor Yellow
+} elseif (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "git не найден в PATH — автодеплой не создан. Установите Git (DEPLOY.md, шаг 5) и запустите скрипт снова." -ForegroundColor Yellow
+} else {
+    $deployCmd = "-NoProfile -ExecutionPolicy Bypass -File `"$ProjectDir\deploy\auto-deploy.ps1`""
+    $deployAction = New-ScheduledTaskAction -Execute "powershell.exe" -Argument $deployCmd -WorkingDirectory $ProjectDir
+    $every1 = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) -RepetitionInterval (New-TimeSpan -Minutes 1)
+    $deploySettings = New-ScheduledTaskSettingsSet -StartWhenAvailable -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+    Register-VektorTask "Vektor AutoDeploy" $deployAction @($every1, $atStartup) $deploySettings
+}
 
 Start-ScheduledTask -TaskName "Vektor Kanban"
 Start-ScheduledTask -TaskName "Caddy"
