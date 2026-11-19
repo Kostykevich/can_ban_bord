@@ -12,6 +12,7 @@ import threading
 from flask import current_app
 
 from .db import utcnow
+from .telegram_bot import format_notification
 
 # События, на которые можно подписаться в профиле
 EVENTS = {
@@ -78,7 +79,10 @@ class Dispatcher:
                 elif channel == "discord_channel":
                     self.discord.send_channel(text)
                 elif channel == "telegram":
-                    self.telegram.send(target, text)
+                    if isinstance(text, tuple):
+                        self.telegram.send(target, text[0], text[1])
+                    else:
+                        self.telegram.send(target, text)
             except Exception as err:
                 print(f"[Уведомления] Не удалось отправить ({channel}): {err}")
 
@@ -112,9 +116,8 @@ def notify_users(db, event, card_id, card_title, actor, user_rows, text):
         if user["notify_discord"] and user["discord_id"]:
             _dispatcher().put("discord_dm", user["discord_id"], plain)
         if user["notify_telegram"] and user["telegram_chat_id"]:
-            rich = (f"{html.escape(text)}\n<b>#{card_id}</b> «{html.escape(card_title)}»\n"
-                    f'<a href="{html.escape(link)}">Открыть карточку</a>')
-            _dispatcher().put("telegram", user["telegram_chat_id"], rich)
+            _dispatcher().put("telegram", user["telegram_chat_id"],
+                              format_notification(event, text, card_id, card_title, link))
     return seen
 
 
@@ -151,6 +154,8 @@ def send_test(user):
         _dispatcher().put("discord_dm", user["discord_id"], text)
         channels.append("Discord")
     if user["telegram_chat_id"] and _dispatcher().telegram:
-        _dispatcher().put("telegram", user["telegram_chat_id"], html.escape(text))
+        _dispatcher().put("telegram", user["telegram_chat_id"], (
+            "✅ <b>Тестовое уведомление</b>\n━━━━━━━━━━━━━━\n\n"
+            f"Всё работает, {html.escape(user['display_name'])}! Уведомления Vektor RP будут приходить сюда.", None))
         channels.append("Telegram")
     return channels

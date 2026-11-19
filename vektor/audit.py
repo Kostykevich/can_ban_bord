@@ -19,6 +19,7 @@ ACTIONS = {
     "auth.discord_register": ("auth", "Зарегистрировался через Discord"),
     "auth.discord_link": ("auth", "Привязал Discord"),
     "telegram.linked": ("profile", "Подключил Telegram"),
+    "telegram.settings": ("profile", "Изменил уведомления в Telegram-боте"),
     # карточки
     "api.card_create": ("cards", "Создал карточку"),
     "api.card_update": ("cards", "Изменил карточку"),

@@ -573,6 +573,42 @@ class TelegramTests(Base):
         reply = bot.handle_update({"message": {"chat": {"id": 555, "type": "private"}, "text": "/start abc123"}})
         self.assertIn("не найден", reply)
 
+    def test_settings_buttons_toggle_events(self):
+        conn = connect(self.app.config["DATABASE"])
+        with conn:
+            conn.execute("UPDATE users SET telegram_chat_id = '777', notify_events = 'assigned,mention' "
+                         "WHERE username = 'tester'")
+        conn.close()
+        bot = TelegramBot("x", self.app.config["DATABASE"])
+        bot._call = lambda *a, **k: {}
+        bot.send = lambda *a, **k: None
+        self.assertIn("Настройки", bot.handle_update(
+            {"message": {"chat": {"id": 777, "type": "private"}, "text": "/settings"}}))
+        query = {"id": "q", "data": "ev:mention", "message": {"message_id": 1, "chat": {"id": 777}}}
+        bot.handle_update({"callback_query": query})
+        query["data"] = "ev:review"
+        bot.handle_update({"callback_query": query})
+        query["data"] = "pause"
+        bot.handle_update({"callback_query": query})
+        conn = connect(self.app.config["DATABASE"])
+        row = conn.execute("SELECT notify_events, notify_telegram FROM users WHERE username = 'tester'").fetchone()
+        conn.close()
+        self.assertEqual(row["notify_events"], "assigned,review")
+        self.assertEqual(row["notify_telegram"], 0)
+        self.assertIn("на паузе", bot.handle_update(
+            {"message": {"chat": {"id": 777, "type": "private"}, "text": "/status"}}))
+
+    def test_notification_format(self):
+        from vektor.telegram_bot import format_notification
+        text, buttons = format_notification("comment", "Ира: <b>смотри</b>", 42, "Баг", "https://kanban.example.ru/card/42")
+        self.assertIn("Новый комментарий", text)
+        self.assertIn("<blockquote>&lt;b&gt;смотри&lt;/b&gt;</blockquote>", text)
+        self.assertEqual(buttons[0][0][1], "https://kanban.example.ru/card/42")
+        # На localhost кнопку Telegram не примет — вместо неё ссылка в тексте
+        text, buttons = format_notification("assigned", "Ира назначил(а) вам задачу", 7, "X", "http://127.0.0.1:5000/card/7")
+        self.assertIsNone(buttons)
+        self.assertIn('href="http://127.0.0.1:5000/card/7"', text)
+
 
 class MigrationTests(unittest.TestCase):
     def test_legacy_prototype_db_is_preserved(self):

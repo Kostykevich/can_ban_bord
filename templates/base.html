@@ -14,7 +14,7 @@
   {% if g.user and g.user.role != 'pending' %}
   <header class="topbar">
     <a class="brand" href="{{ url_for('pages.board') }}" aria-label="Vektor RP — на доску">
-      <span class="brand-mark" aria-hidden="true">V</span>
+      <img class="brand-mark" src="{{ url_for('static', filename='img/logo.svg') }}" alt="" aria-hidden="true" draggable="false">
       <span class="brand-text">
         <strong>VEKTOR RP</strong>
         <small>Панель команды</small>
