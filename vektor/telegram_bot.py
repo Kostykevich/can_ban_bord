@@ -61,7 +61,11 @@ class TelegramBot:
             return "Telegram-бот не запущен. Администратору: перезапустите сайт (serve.py)."
         if self.last_error:
             hint = ""
-            if "недоступен" in self.last_error or "timed out" in self.last_error.lower():
+            if "CERTIFICATE_VERIFY_FAILED" in self.last_error:
+                hint = (" Сертификат Telegram подменяется по пути — обычно это антивирус на сервере с проверкой "
+                        "HTTPS или фильтр хостинга. Администратору: запустите scripts\\check_telegram.py — "
+                        "он покажет, кто выдал сертификат, и что сделать.")
+            elif "недоступен" in self.last_error or "timed out" in self.last_error.lower():
                 hint = (" Похоже, хостинг блокирует Telegram — администратору нужно указать прокси "
                         "(TELEGRAM_PROXY в .env). Проверка: scripts\\check_telegram.py")
             elif "409" in self.last_error:
