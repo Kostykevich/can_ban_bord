@@ -24,6 +24,13 @@ const V = (() => {
         else if (k === "dataset") Object.assign(el.dataset, v);
         else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
         else if (k === "text") el.textContent = v;
+        // Атрибут style блокируется CSP (style-src 'self'), а свойства через CSSOM — нет
+        else if (k === "style") {
+          const props = typeof v === "string"
+            ? v.split(";").map((p) => p.split(":")).filter((p) => p.length > 1).map(([n, ...r]) => [n, r.join(":")])
+            : Object.entries(v);
+          for (const [name, value] of props) el.style.setProperty(name.trim(), String(value).trim());
+        }
         else if (v === true) el.setAttribute(k, "");
         else el.setAttribute(k, v);
       }
