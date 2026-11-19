@@ -21,6 +21,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import tls
 from .db import connect, utcnow
 
 
@@ -35,10 +36,7 @@ def proxy_url():
 
 
 def _opener():
-    proxy = proxy_url()
-    if proxy:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
-    return urllib.request.build_opener()
+    return tls.opener(proxy_url())
 
 
 class TelegramBot:

@@ -23,6 +23,7 @@ from dotenv import load_dotenv  # noqa: E402
 BASE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 load_dotenv(os.path.join(BASE, ".env"))
 
+from vektor import tls  # noqa: E402
 from vektor.telegram_bot import _opener, proxy_url  # noqa: E402
 
 HOST = "api.telegram.org"
@@ -48,8 +49,8 @@ def read_cert_unverified(host):
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     with socket.create_connection((host, 443), timeout=10) as sock:
-        with ctx.wrap_socket(sock, server_hostname=host) as tls:
-            der = tls.getpeercert(binary_form=True)
+        with ctx.wrap_socket(sock, server_hostname=host) as conn:
+            der = conn.getpeercert(binary_form=True)
     pem = ssl.DER_cert_to_PEM_cert(der)
     fd, path = tempfile.mkstemp(suffix=".pem")
     try:
@@ -86,16 +87,25 @@ if ips:
         genuine = any(x in issuer for x in ("Go Daddy", "GoDaddy", "Starfield", "DigiCert", "Let's Encrypt", "GlobalSign"))
         try:
             with socket.create_connection((HOST, 443), timeout=10) as sock:
-                with ssl.create_default_context().wrap_socket(sock, server_hostname=HOST):
+                with tls.context().wrap_socket(sock, server_hostname=HOST):
                     pass
             print(OK + "Проверка сертификата прошла — соединение не перехватывается")
+            try:
+                with socket.create_connection((HOST, 443), timeout=10) as sock:
+                    with ssl.create_default_context().wrap_socket(sock, server_hostname=HOST):
+                        pass
+            except ssl.SSLCertVerificationError:
+                print(WARN + "В Windows на этом сервере нет корневого сертификата — сайт использует набор certifi, это нормально")
         except ssl.SSLCertVerificationError as err:
             bad(f"Сертификат НЕ прошёл проверку: {err.verify_message}")
             low = issuer.lower()
             if any(x in low for x in ("kaspersky", "eset", "avast", "avg", "dr.web", "drweb", "bitdefender", "norton", "fortinet", "sophos")):
                 print("        → Соединение перехватывает АНТИВИРУС на этом сервере. Отключите в нём проверку")
                 print("          HTTPS/SSL (или добавьте python.exe в исключения) и перезапустите сайт.")
-            elif not genuine:
+            elif genuine:
+                print("        → Сертификат настоящий, но корневого сертификата нет ни в Windows, ни в certifi.")
+                print(r"          Обновите зависимости: .venv\Scripts\python.exe -m pip install -r requirements.txt")
+            else:
                 print("        → Сертификат подменяет кто-то по пути: антивирус/файрвол на сервере или фильтр хостинга.")
                 print("          1) Проверьте, нет ли на VDS антивируса с «проверкой HTTPS» — отключите её.")
                 print("          2) Если антивируса нет — это фильтр хостинга: укажите TELEGRAM_PROXY (прокси вне этой сети)")

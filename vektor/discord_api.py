@@ -17,6 +17,8 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+from . import tls
+
 API = "https://discord.com/api/v10"
 USER_AGENT = "DiscordBot (https://localhost, 1.0) VektorKanban"
 
@@ -38,10 +40,7 @@ def _proxy_url():
 
 
 def _opener():
-    proxy = _proxy_url()
-    if proxy:
-        return urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
-    return urllib.request.build_opener()
+    return tls.opener(_proxy_url())
 
 
 def _http(method, url, payload=None, headers=None, form=False):
@@ -246,7 +245,7 @@ class _WebSocket:
             raw = self._via_proxy(proxy, host)
         else:
             raw = socket.create_connection((host, 443), timeout=15)
-        self.sock = ssl.create_default_context().wrap_socket(raw, server_hostname=host)
+        self.sock = tls.context().wrap_socket(raw, server_hostname=host)
         key = base64.b64encode(os.urandom(16)).decode()
         self.sock.sendall((
             f"GET {path} HTTP/1.1\r\nHost: {host}\r\nUpgrade: websocket\r\n"
