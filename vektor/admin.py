@@ -1,4 +1,5 @@
-"""API администратора: пользователи, колонки, списки (приоритеты/категории/…), теги, настройки."""
+"""API администратора сайта: пользователи, теги, общие настройки, журнал.
+Колонки, списки, поля и участники досок — в board_admin.py."""
 
 from flask import Blueprint, g, jsonify, request
 from werkzeug.security import generate_password_hash
@@ -7,7 +8,7 @@ from . import audit as A
 from . import models as M
 from .api import body, clean_text, fail
 from .auth import MIN_PASSWORD, USERNAME_RE, admin_required
-from .constants import COLUMN_KINDS, LIMITS, OPTION_KINDS, ROLES, WORK_ROLES
+from .constants import BOARD_ROLES, LIMITS, ROLES, WORK_ROLES
 from .db import get_db, utcnow
 from .notify import CHANNEL_EVENTS, DEFAULT_EVENTS
 
@@ -45,10 +46,28 @@ def _user_dict(r):
 
 @bp.get("/users")
 def users_list():
-    rows = get_db().execute(
+    db = get_db()
+    rows = db.execute(
         "SELECT * FROM users ORDER BY (role != 'pending'), display_name COLLATE NOCASE"
     ).fetchall()
-    return jsonify(users=[_user_dict(r) for r in rows])
+    users = []
+    for r in rows:
+        u = _user_dict(r)
+        u["boards"] = [{**b, "role_label": BOARD_ROLES[b["role"]]} for b in M.user_boards(db, r["id"])]
+        users.append(u)
+    return jsonify(users=users)
+
+
+def _add_to_first_board(db, user_id, role):
+    """Новый участник сразу попадает на первую доску — иначе ему нечего открыть."""
+    if role not in ("tester", "developer"):
+        return
+    if db.execute("SELECT 1 FROM board_members WHERE user_id = ?", (user_id,)).fetchone():
+        return
+    first = db.execute("SELECT id FROM boards ORDER BY position, id LIMIT 1").fetchone()
+    if first:
+        db.execute("INSERT INTO board_members (board_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
+                   (first["id"], user_id, role, utcnow()))
 
 
 @bp.post("/users")
@@ -79,12 +98,13 @@ def user_create():
         errors["password"] = f"Пароль от {MIN_PASSWORD} символов."
     if errors:
         return fail("Проверьте поля.", 400, errors)
-    db.execute(
+    cur = db.execute(
         "INSERT INTO users (username, display_name, password_hash, discord_id, role, notify_events, created_at) "
         "VALUES (?, ?, ?, ?, ?, ?, ?)",
         (username, display, generate_password_hash(password) if password else None,
          discord_id, role, DEFAULT_EVENTS[role], utcnow()),
     )
+    _add_to_first_board(db, cur.lastrowid, role)
     _changed(db)
     A.details(f"@{username} — {ROLES[role]}")
     return users_list(), 201
@@ -148,6 +168,7 @@ def user_update(user_id):
         sets = ", ".join(f"{k} = ?" for k in updates)
         db.execute(f"UPDATE users SET {sets} WHERE id = ?", (*updates.values(), user_id))
         if updates.get("role") and user["role"] == "pending":
+            _add_to_first_board(db, user_id, updates["role"])
             db.execute(
                 "INSERT INTO notifications (user_id, card_id, event, text, created_at) VALUES (?, NULL, 'access', ?, ?)",
                 (user_id, f"Вам выдан доступ: {ROLES[updates['role']]}", utcnow()),
@@ -169,243 +190,6 @@ def user_password(user_id):
     db.execute("UPDATE users SET password_hash = ? WHERE id = ?", (generate_password_hash(password), user_id))
     db.commit()
     return jsonify(ok=True)
-
-
-# ---------------------------------------------------------------- колонки
-
-def _column_payload(db, data, current=None):
-    errors = {}
-    values = {}
-    if "name" in data or current is None:
-        name = clean_text(data.get("name"), LIMITS["column_name"])
-        if not name or len(name) > LIMITS["column_name"]:
-            errors["name"] = f"От 1 до {LIMITS['column_name']} символов."
-        values["name"] = name
-    if "kind" in data or current is None:
-        if data.get("kind") not in COLUMN_KINDS:
-            errors["kind"] = "Выберите тип."
-        values["kind"] = data.get("kind")
-    if "move_roles" in data or current is None:
-        roles = data.get("move_roles") or []
-        if not isinstance(roles, list) or any(r not in ("tester", "developer") for r in roles):
-            errors["move_roles"] = "Неверные роли."
-        else:
-            values["move_roles"] = ",".join(r for r in ("tester", "developer") if r in roles)
-    if "wip_limit" in data:
-        raw = data.get("wip_limit")
-        if raw in (None, "", 0, "0"):
-            values["wip_limit"] = None
-        else:
-            try:
-                limit = int(raw)
-                assert 1 <= limit <= 999
-                values["wip_limit"] = limit
-            except (TypeError, ValueError, AssertionError):
-                errors["wip_limit"] = "Число от 1 до 999 или пусто."
-    return values, errors
-
-
-@bp.get("/columns")
-def columns_list():
-    db = get_db()
-    cols = M.list_columns(db)
-    for col in cols:
-        col["card_count"] = db.execute("SELECT COUNT(*) FROM cards WHERE column_id = ?", (col["id"],)).fetchone()[0]
-    return jsonify(columns=cols, kinds=COLUMN_KINDS)
-
-
-@bp.post("/columns")
-def column_create():
-    db = get_db()
-    values, errors = _column_payload(db, body())
-    if errors:
-        return fail("Проверьте поля.", 400, errors)
-    pos = db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM board_columns").fetchone()[0]
-    db.execute(
-        "INSERT INTO board_columns (name, kind, move_roles, wip_limit, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
-        (values["name"], values["kind"], values["move_roles"], values.get("wip_limit"), pos, utcnow()),
-    )
-    _changed(db)
-    A.details(f"«{values['name']}»")
-    return columns_list(), 201
-
-
-@bp.patch("/columns/<int:column_id>")
-def column_update(column_id):
-    db = get_db()
-    current = M.get_column(db, column_id)
-    if current is None:
-        return fail("Колонка не найдена.", 404)
-    values, errors = _column_payload(db, body(), current)
-    if errors:
-        return fail("Проверьте поля.", 400, errors)
-    A.details(f"«{current['name']}»" + (f" → «{values['name']}»" if values.get("name") and values["name"] != current["name"] else ""))
-    if values.get("kind") and values["kind"] != current["kind"]:
-        if current["kind"] == "done":
-            # Карточки в колонке перестанут считаться закрытыми
-            db.execute("UPDATE cards SET closed_at = NULL, resolution_id = NULL WHERE column_id = ?", (column_id,))
-        if values["kind"] == "done":
-            db.execute("UPDATE cards SET closed_at = ? WHERE column_id = ? AND closed_at IS NULL",
-                       (utcnow(), column_id))
-    if values:
-        sets = ", ".join(f"{k} = ?" for k in values)
-        db.execute(f"UPDATE board_columns SET {sets} WHERE id = ?", (*values.values(), column_id))
-        _changed(db)
-    return columns_list()
-
-
-@bp.post("/columns/<int:column_id>/move")
-def column_move(column_id):
-    col = M.get_column(get_db(), column_id)
-    if col:
-        A.details(f"«{col['name']}» {'влево' if body().get('direction') == -1 else 'вправо'}")
-    return _reorder(get_db(), "board_columns", column_id, body().get("direction"), None) or columns_list()
-
-
-@bp.delete("/columns/<int:column_id>")
-def column_delete(column_id):
-    db = get_db()
-    current = M.get_column(db, column_id)
-    if current is None:
-        return fail("Колонка не найдена.", 404)
-    if db.execute("SELECT COUNT(*) FROM board_columns").fetchone()[0] <= 1:
-        return fail("Нельзя удалить последнюю колонку.", 409)
-    count = db.execute("SELECT COUNT(*) FROM cards WHERE column_id = ?", (column_id,)).fetchone()[0]
-    if count:
-        target = M.get_column(db, body().get("target_column_id"))
-        if target is None or target["id"] == column_id:
-            return fail(f"В колонке {count} карточек — выберите, куда их перенести.", 400,
-                        {"target_column_id": "Обязательное поле."})
-        now = utcnow()
-        cards = db.execute("SELECT id FROM cards WHERE column_id = ?", (column_id,)).fetchall()
-        closing = "closed_at = COALESCE(closed_at, ?)" if target["kind"] == "done" else "closed_at = NULL, resolution_id = NULL"
-        params = (target["id"], now, now, column_id) if target["kind"] == "done" else (target["id"], now, column_id)
-        db.execute(f"UPDATE cards SET column_id = ?, {closing}, updated_at = ?, version = version + 1 "
-                   "WHERE column_id = ?", params)
-        for c in cards:
-            M.log(db, c["id"], g.user["id"], "moved", "column", current["name"] + " (удалена)", target["name"])
-    db.execute("DELETE FROM board_columns WHERE id = ?", (column_id,))
-    _changed(db)
-    A.details(f"«{current['name']}»" + (f", {count} карточек перенесено в «{target['name']}»" if count else ""))
-    return columns_list()
-
-
-# ---------------------------------------------------------------- списки
-
-@bp.get("/options")
-def options_list():
-    db = get_db()
-    grouped = M.options_grouped(db)
-    for items in grouped.values():
-        for opt in items:
-            opt["usage"] = db.execute(
-                "SELECT COUNT(*) FROM cards WHERE priority_id = ? OR category_id = ? OR server_id = ? OR resolution_id = ?",
-                (opt["id"],) * 4,
-            ).fetchone()[0]
-    return jsonify(options=grouped, kinds=OPTION_KINDS)
-
-
-@bp.post("/options")
-def option_create():
-    db = get_db()
-    data = body()
-    kind = data.get("kind")
-    name = clean_text(data.get("name"), LIMITS["option_name"])
-    if kind not in OPTION_KINDS:
-        return fail("Неизвестный список.")
-    if not name or len(name) > LIMITS["option_name"]:
-        return fail(f"Название от 1 до {LIMITS['option_name']} символов.", 400, {"name": "Неверная длина."})
-    if db.execute("SELECT 1 FROM options WHERE kind = ? AND name = ?", (kind, name)).fetchone():
-        return fail("Такое значение уже есть.", 409, {"name": "Уже есть."})
-    pos = db.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM options WHERE kind = ?", (kind,)).fetchone()[0]
-    db.execute("INSERT INTO options (kind, name, position, created_at) VALUES (?, ?, ?, ?)", (kind, name, pos, utcnow()))
-    _changed(db)
-    A.details(f"{OPTION_KINDS[kind]}: «{name}»")
-    return options_list(), 201
-
-
-def _active_count(db, kind):
-    return db.execute("SELECT COUNT(*) FROM options WHERE kind = ? AND is_active = 1", (kind,)).fetchone()[0]
-
-
-@bp.patch("/options/<int:option_id>")
-def option_update(option_id):
-    db = get_db()
-    opt = db.execute("SELECT * FROM options WHERE id = ?", (option_id,)).fetchone()
-    if opt is None:
-        return fail("Значение не найдено.", 404)
-    data = body()
-    if "name" in data:
-        name = clean_text(data["name"], LIMITS["option_name"])
-        if not name or len(name) > LIMITS["option_name"]:
-            return fail("Неверная длина названия.")
-        if db.execute("SELECT 1 FROM options WHERE kind = ? AND name = ? AND id != ?",
-                      (opt["kind"], name, option_id)).fetchone():
-            return fail("Такое значение уже есть.", 409)
-        db.execute("UPDATE options SET name = ? WHERE id = ?", (name, option_id))
-    if "is_active" in data:
-        active = 1 if data["is_active"] else 0
-        if not active and opt["is_active"] and _active_count(db, opt["kind"]) <= 1:
-            return fail("Должно остаться хотя бы одно активное значение.", 409)
-        db.execute("UPDATE options SET is_active = ? WHERE id = ?", (active, option_id))
-    _changed(db)
-    what = []
-    if "name" in data and name != opt["name"]:
-        what.append(f"→ «{name}»")
-    if "is_active" in data and active != opt["is_active"]:
-        what.append("включено" if active else "отключено")
-    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}» " + ", ".join(what))
-    return options_list()
-
-
-@bp.post("/options/<int:option_id>/move")
-def option_move(option_id):
-    db = get_db()
-    opt = db.execute("SELECT kind, name FROM options WHERE id = ?", (option_id,)).fetchone()
-    if opt is None:
-        return fail("Значение не найдено.", 404)
-    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}»")
-    return _reorder(db, "options", option_id, body().get("direction"), opt["kind"]) or options_list()
-
-
-@bp.delete("/options/<int:option_id>")
-def option_delete(option_id):
-    db = get_db()
-    opt = db.execute("SELECT * FROM options WHERE id = ?", (option_id,)).fetchone()
-    if opt is None:
-        return fail("Значение не найдено.", 404)
-    used = db.execute(
-        "SELECT COUNT(*) FROM cards WHERE priority_id = ? OR category_id = ? OR server_id = ? OR resolution_id = ?",
-        (option_id,) * 4,
-    ).fetchone()[0]
-    if used:
-        return fail(f"Используется в {used} карточках. Отключите значение — оно пропадёт из форм, "
-                    "но останется у старых карточек.", 409)
-    if opt["is_active"] and _active_count(db, opt["kind"]) <= 1:
-        return fail("Должно остаться хотя бы одно активное значение.", 409)
-    db.execute("DELETE FROM options WHERE id = ?", (option_id,))
-    _changed(db)
-    A.details(f"{OPTION_KINDS[opt['kind']]}: «{opt['name']}»")
-    return options_list()
-
-
-def _reorder(db, table, item_id, direction, kind):
-    """Меняет местами элемент с соседом сверху (-1) или снизу (+1)."""
-    if direction not in (-1, 1):
-        return fail("Неверное направление.")
-    where, params = ("WHERE kind = ?", (kind,)) if kind else ("", ())
-    rows = db.execute(f"SELECT id FROM {table} {where} ORDER BY position, id", params).fetchall()
-    ids = [r["id"] for r in rows]
-    if item_id not in ids:
-        return fail("Не найдено.", 404)
-    i = ids.index(item_id)
-    j = i + direction
-    if 0 <= j < len(ids):
-        ids[i], ids[j] = ids[j], ids[i]
-        for pos, rid in enumerate(ids):
-            db.execute(f"UPDATE {table} SET position = ? WHERE id = ?", (pos, rid))
-        _changed(db)
-    return None
 
 
 # ---------------------------------------------------------------- теги

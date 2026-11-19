@@ -28,7 +28,7 @@ const V = (() => {
         else el.setAttribute(k, v);
       }
     }
-    for (const child of children.flat()) {
+    for (const child of children.flat(Infinity)) {
       if (child === null || child === undefined || child === false) continue;
       el.append(child instanceof Node ? child : document.createTextNode(String(child)));
     }
@@ -161,6 +161,24 @@ const V = (() => {
     return h("span", { class: cls, "aria-hidden": "true" }, ((user && user.name) || "?")[0].toUpperCase());
   }
 
+  /* Роль на доске: значок «Руководитель», «Разработчик»… */
+  const ROLE_LABELS = { admin: "Администратор", lead: "Руководитель", developer: "Разработчик", tester: "Тестер", pending: "Ожидает доступа" };
+  function roleLabel(role) { return ROLE_LABELS[role] || ""; }
+  function roleBadge(role, short = false) {
+    if (!role || !ROLE_LABELS[role]) return null;
+    const text = short ? { admin: "Админ", lead: "Рук.", developer: "Разраб.", tester: "Тестер" }[role] || ROLE_LABELS[role] : ROLE_LABELS[role];
+    return h("span", { class: `role-badge role-${role}`, title: ROLE_LABELS[role] }, text);
+  }
+
+  /* Имя человека, по клику — мини-профиль */
+  function userLink(user, { avatar = true, size = "avatar-xs", role = null, short = false } = {}) {
+    if (!user) return h("span", { class: "muted" }, "Удалённый пользователь");
+    return h("button", { type: "button", class: "user-link", dataset: { userId: user.id }, title: `Профиль: ${user.name}` },
+      avatar ? avatarEl(user, size) : null,
+      h("span", { class: "user-link-name" }, user.name),
+      role ? roleBadge(role, short) : null);
+  }
+
   /* Находит пользователя по логину — текущему или старому (после смены логина) */
   function userByLogin(login) {
     const l = login.toLowerCase();
@@ -180,7 +198,9 @@ const V = (() => {
         frag.append(document.createTextNode(pre));
         // старый логин показываем как текущий — упоминание не «ломается» после смены логина
         const user = userByLogin(name);
-        frag.append(h("span", { class: "mention", title: user ? user.name : null }, "@" + (user ? user.username : name)));
+        frag.append(user
+          ? h("button", { type: "button", class: "mention", title: `Профиль: ${user.name}`, dataset: { userId: user.id } }, "@" + user.username)
+          : h("span", { class: "mention" }, "@" + name));
       }
       last = offset + match.length;
       return match;
@@ -313,6 +333,17 @@ const V = (() => {
   function setUnread(n) {
     const badge = document.getElementById("bell-count");
     if (!badge) return;
+    const before = parseInt(badge.dataset.n || "0", 10);
+    badge.dataset.n = String(n);
+    if (n > before && before >= 0 && badge.dataset.ready) {
+      // новое уведомление — колокольчик «звенит», счётчик подпрыгивает
+      badge.classList.remove("bump");
+      void badge.offsetWidth;
+      badge.classList.add("bump");
+      const bell = document.getElementById("bell-btn");
+      bell?.classList.remove("ring"); void bell?.offsetWidth; bell?.classList.add("ring");
+    }
+    badge.dataset.ready = "1";
     badge.textContent = n > 99 ? "99+" : String(n);
     badge.hidden = !n;
     document.title = document.title.replace(/^\(\d+\+?\) /, "");
@@ -372,11 +403,110 @@ const V = (() => {
     }
   }
 
+  // ------------------------------------------------------------ мини-профиль
+
+  /* Карточка человека поверх страницы (и поверх открытого окна — через popover).
+     Страница доски может передать свои действия через V.userCardActions(user) */
+  let pop = null;
+  let popFor = null;
+  let userCardActions = null;
+  let userCardBoard = null;
+  function setUserCardContext(boardId, actions) { userCardBoard = boardId; userCardActions = actions; }
+
+  function closeUserCard() {
+    if (!pop) return;
+    try { if (pop.matches(":popover-open")) pop.hidePopover(); } catch (e) { /* */ }
+    pop.remove();
+    pop = null;
+    const back = popFor;
+    popFor = null;
+    if (back && document.contains(back)) back.focus();
+  }
+
+  function placePop(anchor) {
+    const r = anchor.getBoundingClientRect();
+    const w = pop.offsetWidth, ht = pop.offsetHeight;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    let top = r.bottom + 6;
+    if (top + ht > window.innerHeight - 8) top = Math.max(8, r.top - ht - 6);
+    pop.style.left = left + "px";
+    pop.style.top = top + "px";
+  }
+
+  async function openUserCard(userId, anchor) {
+    if (popFor === anchor && pop) { closeUserCard(); return; }
+    closeUserCard();
+    popFor = anchor;
+    pop = h("div", { class: "user-pop", role: "dialog", "aria-label": "Профиль участника", tabindex: "-1" },
+      h("p", { class: "muted small m0" }, "Загрузка…"));
+    const usePopover = typeof pop.showPopover === "function";
+    if (usePopover) pop.setAttribute("popover", "manual");
+    (anchor.closest("dialog[open]") && !usePopover ? anchor.closest("dialog[open]") : document.body).append(pop);
+    if (usePopover) { try { pop.showPopover(); } catch (e) { /* */ } }
+    placePop(anchor);
+    let u;
+    try {
+      u = await api("GET", `/api/users/${userId}` + (userCardBoard ? `?board_id=${userCardBoard}` : ""));
+    } catch (e) {
+      if (pop) pop.replaceChildren(h("p", { class: "muted small m0" }, e.message));
+      return;
+    }
+    if (!pop || popFor !== anchor) return;
+    const stats = u.stats ? h("dl", { class: "user-pop-stats" },
+      h("div", null, h("dt", null, "В работе"), h("dd", null, String(u.stats.active))),
+      h("div", null, h("dt", null, "Закрыто"), h("dd", null, String(u.stats.closed))),
+      h("div", null, h("dt", null, "Создал(а)"), h("dd", null, String(u.stats.created)))) : null;
+    const actions = userCardActions ? userCardActions(u) : [];
+    pop.replaceChildren(
+      h("button", { type: "button", class: "icon-btn user-pop-close", "aria-label": "Закрыть", onclick: closeUserCard }, "✕"),
+      h("div", { class: "user-pop-head" },
+        avatarEl({ name: u.name, avatar: u.avatar }, "avatar-lg"),
+        h("div", { class: "user-pop-id" },
+          h("strong", null, u.name),
+          h("span", { class: "muted small" }, "@" + u.username),
+          h("div", { class: "row-gap user-pop-roles" },
+            u.board_role ? roleBadge(u.board_role) : roleBadge(u.role),
+            u.is_active ? null : h("span", { class: "pill" }, "Отключён")))),
+      u.boards.length ? h("div", { class: "user-pop-boards" },
+        h("span", { class: "muted small" }, "Доски:"),
+        ...u.boards.map((b) => h("span", { class: "pill", title: b.role_label }, `${b.name} · ${b.role_label}`))) : null,
+      stats,
+      h("p", { class: "muted small m0" },
+        u.last_login_at ? `Заходил(а): ${relDate(u.last_login_at)}` : "Ещё не заходил(а)",
+        u.discord ? " · Discord" : "", u.telegram ? " · Telegram" : ""),
+      h("div", { class: "row-gap user-pop-actions" },
+        ...actions,
+        h("button", { type: "button", class: "btn btn-sm btn-ghost", onclick: () => {
+          navigator.clipboard.writeText("@" + u.username).then(() => toast("Логин скопирован — вставьте в комментарий"), () => {});
+        } }, "Скопировать @логин")));
+    placePop(anchor);
+    pop.focus();
+  }
+
+  function setupUserCards() {
+    document.addEventListener("click", (e) => {
+      const link = e.target.closest("[data-user-id]");
+      if (link) {
+        e.preventDefault();
+        e.stopPropagation();
+        openUserCard(link.dataset.userId, link);
+        return;
+      }
+      if (pop && !e.target.closest(".user-pop")) closeUserCard();
+    }, true);
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && pop) { e.preventDefault(); e.stopPropagation(); closeUserCard(); }
+    }, true);
+    window.addEventListener("resize", closeUserCard);
+    document.addEventListener("scroll", (e) => { if (pop && !e.target.closest?.(".user-pop")) closeUserCard(); }, true);
+  }
+
   // ------------------------------------------------------------ старт
 
   document.addEventListener("DOMContentLoaded", () => {
     setupModals();
     setupBell();
+    setupUserCards();
     $$("textarea[data-mentions]").forEach(attachMentions);
     (readJSON("flashes") || []).forEach(([cat, msg]) => toast(msg, cat === "error" ? "error" : "success"));
     const badge = document.getElementById("bell-count");
@@ -384,5 +514,6 @@ const V = (() => {
   });
 
   return { $, $$, h, api, ApiError, busy, toast, BOOT, fullDate, relDate, timeEl, plural, rich, avatarEl,
-           openModal, closeModal, confirmDialog, showFieldErrors, attachMentions, setMentionUsers, setUnread };
+           openModal, closeModal, confirmDialog, showFieldErrors, attachMentions, setMentionUsers, setUnread,
+           roleBadge, roleLabel, userLink, openUserCard, closeUserCard, setUserCardContext };
 })();

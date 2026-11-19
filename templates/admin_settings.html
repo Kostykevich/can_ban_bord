@@ -2,22 +2,57 @@
 {% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
 {% block content %}
 <div class="page-wide">
-  <h1>Настройки доски</h1>
+  <div class="page-title-row">
+    <h1>Настройки</h1>
+    <div class="board-picker">
+      <label for="board-select" class="muted small">Доска</label>
+      <select id="board-select"></select>
+    </div>
+  </div>
+  <p class="muted small" id="board-picker-hint">Колонки, поля, списки и участники настраиваются отдельно для каждой доски.</p>
 
   <div class="tabs" role="tablist" aria-label="Разделы настроек" id="settings-tabs">
+    <button type="button" role="tab" id="tab-boards" aria-controls="panel-boards" aria-selected="false" tabindex="-1">Доски</button>
     <button type="button" role="tab" id="tab-columns" aria-controls="panel-columns" aria-selected="true">Колонки</button>
+    <button type="button" role="tab" id="tab-fields" aria-controls="panel-fields" aria-selected="false" tabindex="-1">Поля карточки</button>
     <button type="button" role="tab" id="tab-lists" aria-controls="panel-lists" aria-selected="false" tabindex="-1">Списки</button>
-    <button type="button" role="tab" id="tab-tags" aria-controls="panel-tags" aria-selected="false" tabindex="-1">Теги</button>
-    <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="false" tabindex="-1">Общие</button>
+    <button type="button" role="tab" id="tab-members" aria-controls="panel-members" aria-selected="false" tabindex="-1">Участники</button>
+    <button type="button" role="tab" id="tab-tags" aria-controls="panel-tags" aria-selected="false" tabindex="-1" data-admin>Теги</button>
+    <button type="button" role="tab" id="tab-general" aria-controls="panel-general" aria-selected="false" tabindex="-1" data-admin>Общие</button>
   </div>
+
+  <section role="tabpanel" id="panel-boards" aria-labelledby="tab-boards" class="panel" hidden>
+    <div class="page-title-row">
+      <h2>Доски</h2>
+      <button type="button" class="btn btn-primary btn-sm" id="add-board" data-admin>＋ Доска</button>
+    </div>
+    <p class="muted small">Доска — отдельное подразделение: свои колонки, поля карточек, списки и участники.
+      Карточки видят только участники доски и администраторы.</p>
+    <ul class="settings-list" id="boards-list"></ul>
+  </section>
 
   <section role="tabpanel" id="panel-columns" aria-labelledby="tab-columns" class="panel">
     <div class="page-title-row">
       <h2>Колонки доски</h2>
       <button type="button" class="btn btn-primary btn-sm" id="add-column">＋ Колонка</button>
     </div>
-    <p class="muted small">Порядок колонок — слева направо. Тип колонки задаёт её поведение. Администратор может переносить карточки в любую колонку.</p>
+    <p class="muted small">Порядок колонок — слева направо. Тип колонки задаёт её поведение. Руководитель доски и администратор могут переносить карточки в любую колонку.</p>
     <ul class="settings-list" id="columns-list"></ul>
+  </section>
+
+  <section role="tabpanel" id="panel-fields" aria-labelledby="tab-fields" class="panel" hidden>
+    <div class="page-title-row">
+      <h2>Поля карточки</h2>
+      <button type="button" class="btn btn-primary btn-sm" id="add-field">＋ Своё поле</button>
+    </div>
+    <p class="muted small">Название, описание, приоритет, теги, исполнитель и скриншоты есть всегда. Остальные поля
+      можно переименовать, сделать обязательными, показать на карточке доски, отключить или удалить. Порядок здесь — порядок в форме.</p>
+    <ul class="settings-list" id="fields-list"></ul>
+    <form class="add-row" id="builtin-add" hidden>
+      <label class="sr-only" for="builtin-select">Вернуть встроенное поле</label>
+      <select id="builtin-select"></select>
+      <button type="submit" class="btn btn-sm">Вернуть встроенное поле</button>
+    </form>
   </section>
 
   <section role="tabpanel" id="panel-lists" aria-labelledby="tab-lists" class="panel" hidden>
@@ -26,23 +61,30 @@
     <div class="lists-grid" id="lists-grid"></div>
   </section>
 
+  <section role="tabpanel" id="panel-members" aria-labelledby="tab-members" class="panel" hidden>
+    <h2>Участники доски</h2>
+    <p class="muted small"><strong>Руководитель</strong> настраивает доску, добавляет людей, назначает исполнителей и архивирует карточки.
+      <strong>Разработчик</strong> берёт задачи в работу. <strong>Тестер</strong> создаёт карточки и проверяет. Куда кто может
+      переносить карточки — в настройках колонок. Администраторы сайта видят все доски.</p>
+    <form class="add-row add-member" id="member-add">
+      <label class="sr-only" for="member-user">Пользователь</label>
+      <select id="member-user"></select>
+      <label class="sr-only" for="member-role">Роль</label>
+      <select id="member-role"></select>
+      <button type="submit" class="btn btn-sm btn-primary">Добавить</button>
+    </form>
+    <ul class="settings-list" id="members-list"></ul>
+  </section>
+
   <section role="tabpanel" id="panel-tags" aria-labelledby="tab-tags" class="panel" hidden>
     <h2>Теги</h2>
-    <p class="muted small">Теги создают сами участники прямо в карточках. Здесь их можно переименовать или удалить.</p>
+    <p class="muted small">Теги общие для всех досок. Их создают сами участники прямо в карточках. Здесь их можно переименовать или удалить.</p>
     <ul class="settings-list" id="tags-list"></ul>
   </section>
 
   <section role="tabpanel" id="panel-general" aria-labelledby="tab-general" class="panel" hidden>
     <h2>Общие</h2>
     <form id="general-form" class="form-stack" novalidate>
-      <div class="field">
-        <label for="g-title">Заголовок доски</label>
-        <input id="g-title" maxlength="60" required>
-      </div>
-      <div class="field">
-        <label for="g-subtitle">Подзаголовок</label>
-        <input id="g-subtitle" maxlength="200">
-      </div>
       <div class="field">
         <label for="g-days">Сколько дней показывать закрытые задачи на доске (дальше — в архиве)</label>
         <input id="g-days" type="number" min="1" max="365" required>
@@ -54,6 +96,35 @@
     </form>
   </section>
 </div>
+
+<dialog class="modal" id="board-modal" aria-labelledby="board-modal-title">
+  <form class="modal-inner" id="board-form" novalidate>
+    <header class="modal-head">
+      <h2 id="board-modal-title">Доска</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="form-error" id="board-error" role="alert" hidden></p>
+    <div class="form-stack">
+      <div class="field">
+        <label for="b-name">Название</label>
+        <input id="b-name" maxlength="40" required placeholder="например «Маппинг» или «Новые системы»">
+      </div>
+      <div class="field">
+        <label for="b-desc">Описание <span class="muted">(видно под названием доски)</span></label>
+        <input id="b-desc" maxlength="200">
+      </div>
+      <p class="muted small m0" id="b-create-note">Новая доска создаётся с четырьмя колонками и базовыми списками — всё можно поменять.
+        Участников добавьте на вкладке «Участники».</p>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
 
 <dialog class="modal" id="column-modal" aria-labelledby="column-modal-title">
   <form class="modal-inner" id="column-form" novalidate>
@@ -80,6 +151,51 @@
         <label for="c-wip">Лимит задач в колонке <span class="muted">(пусто — без лимита)</span></label>
         <input id="c-wip" type="number" min="1" max="999">
       </div>
+    </div>
+    <footer class="modal-foot">
+      <span></span>
+      <div class="row-gap">
+        <button type="button" class="btn btn-ghost" data-close>Отмена</button>
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+      </div>
+    </footer>
+  </form>
+</dialog>
+
+<dialog class="modal" id="field-modal" aria-labelledby="field-modal-title">
+  <form class="modal-inner" id="field-form" novalidate>
+    <header class="modal-head">
+      <h2 id="field-modal-title">Поле карточки</h2>
+      <button type="button" class="icon-btn" data-close aria-label="Закрыть">✕</button>
+    </header>
+    <p class="form-error" id="field-error" role="alert" hidden></p>
+    <div class="form-stack">
+      <div class="field">
+        <label for="fl-label">Название поля</label>
+        <input id="fl-label" maxlength="50" required placeholder="например «Зачем нужна система»">
+        <p class="hint" data-error-for="label"></p>
+      </div>
+      <div class="field" id="fl-type-field">
+        <label for="fl-type">Тип</label>
+        <select id="fl-type"></select>
+        <p class="muted small m0" id="fl-type-note"></p>
+      </div>
+      <div class="field" id="fl-choices-field">
+        <label for="fl-choices">Варианты — каждый с новой строки</label>
+        <textarea id="fl-choices" rows="4" placeholder="Небольшая&#10;Средняя&#10;Большая"></textarea>
+        <p class="hint" data-error-for="choices"></p>
+      </div>
+      <div class="field">
+        <label for="fl-hint">Подсказка под полем <span class="muted">(необязательно)</span></label>
+        <input id="fl-hint" maxlength="120">
+      </div>
+      <fieldset class="checks">
+        <legend>Настройки</legend>
+        <label class="check"><input type="checkbox" id="fl-required"> Обязательное — без него карточку не создать</label>
+        <label class="check" id="fl-oncard-label"><input type="checkbox" id="fl-oncard"> Показывать на карточке доски</label>
+        <label class="check"><input type="checkbox" id="fl-active"> Включено (отключённое поле прячется, данные сохраняются)</label>
+      </fieldset>
+      <p class="hint" data-error-for="show_on_card"></p>
     </div>
     <footer class="modal-foot">
       <span></span>

@@ -2,10 +2,14 @@
 {% block body_class %}page-board{% endblock %}
 {% block boot %}<script type="application/json" id="boot">{{ boot | tojson }}</script>{% endblock %}
 {% block content %}
+<nav class="board-switch" id="board-switch" aria-label="Доски">
+  {% for b in boards %}<a href="/?board={{ b.id }}" class="board-tab" data-board="{{ b.id }}">{{ b.name }}</a>{% endfor %}
+</nav>
 <section class="board-head" aria-labelledby="board-title">
   <div class="board-head-text">
-    <h1 id="board-title">{{ site_settings.get('board_title', 'Доска задач') }}</h1>
-    <p class="muted">{{ site_settings.get('board_subtitle', '') }}</p>
+    <h1 id="board-title">{{ boards[0].name if boards else site_settings.get('board_title', 'Доска задач') }}</h1>
+    <p class="muted" id="board-subtitle">{{ boards[0].description if boards else '' }}</p>
+    <p class="board-my-role small muted" id="board-my-role"></p>
   </div>
   <div class="board-head-actions">
     <div class="view-switch" role="group" aria-label="Режим">
@@ -45,6 +49,7 @@
     <select id="f-tag" data-filter="tag"><option value="">Любой тег</option></select>
     <label class="sr-only" for="f-server">Сервер</label>
     <select id="f-server" data-filter="server"><option value="">Любой сервер</option></select>
+    <a class="btn btn-ghost btn-sm" id="board-settings-link" href="/admin/settings" hidden>Настроить доску</a>
     <button type="button" class="btn btn-ghost btn-sm" id="reset-filters" hidden>Сбросить</button>
   </div>
   <p class="result-count" id="result-count" aria-live="polite"></p>
@@ -93,60 +98,13 @@
         <p class="hint" data-error-for="description"></p>
       </div>
 
-      <div class="field field-full">
-        <label for="cf-steps">Шаги воспроизведения</label>
-        <textarea id="cf-steps" name="steps" maxlength="5000" rows="4"></textarea>
-        <p class="hint" data-error-for="steps"></p>
-      </div>
-
-      <div class="field">
-        <label for="cf-expected">Ожидаемый результат</label>
-        <textarea id="cf-expected" name="expected" maxlength="2000" rows="2"></textarea>
-      </div>
-      <div class="field">
-        <label for="cf-actual">Фактический результат</label>
-        <textarea id="cf-actual" name="actual" maxlength="2000" rows="2"></textarea>
-      </div>
-
       <div class="field">
         <label for="cf-priority">Приоритет</label>
         <select id="cf-priority" name="priority_id"></select>
       </div>
-      <div class="field">
-        <label for="cf-category">Категория</label>
-        <select id="cf-category" name="category_id"></select>
-      </div>
-      <div class="field">
-        <label for="cf-server">Сервер</label>
-        <select id="cf-server" name="server_id"></select>
-      </div>
-      <div class="field">
-        <label for="cf-frequency">Как часто повторяется</label>
-        <select id="cf-frequency" name="frequency"></select>
-      </div>
 
-      <div class="field">
-        <label for="cf-build">Версия сборки</label>
-        <input id="cf-build" name="build_version" maxlength="50" placeholder="например 1.4.2">
-      </div>
-      <div class="field">
-        <label for="cf-coords">Координаты <span class="muted">(/coords)</span></label>
-        <input id="cf-coords" name="coords" maxlength="100" placeholder="x, y, z">
-      </div>
-      <div class="field">
-        <label for="cf-static">Static ID персонажа</label>
-        <input id="cf-static" name="static_id" maxlength="30">
-      </div>
-      <div class="field">
-        <label for="cf-occurred">Когда произошло <span class="muted">(МСК)</span></label>
-        <input id="cf-occurred" name="occurred_at" type="datetime-local">
-      </div>
-
-      <div class="field field-full">
-        <label for="cf-video">Ссылка на видео</label>
-        <input id="cf-video" name="video_url" type="url" maxlength="500" placeholder="https://youtu.be/… или Medal, Streamable">
-        <p class="hint" data-error-for="video_url"></p>
-      </div>
+      <!-- Поля, которые настроены для этой доски (встроенные и свои) -->
+      <div class="form-dynamic" id="cf-dynamic"></div>
 
       <div class="field field-full">
         <label for="cf-tag-input">Теги</label>

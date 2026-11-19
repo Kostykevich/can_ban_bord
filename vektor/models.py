@@ -4,6 +4,7 @@ import re
 import secrets
 from datetime import datetime, timedelta, timezone
 
+from . import constants as C
 from .db import utcnow
 
 MENTION_RE = re.compile(r"(?<![\w@])@([A-Za-z0-9_.\-]{2,32})")
@@ -35,14 +36,15 @@ def done_cutoff(db):
 
 # ---------------------------------------------------------------- колонки и списки
 
-def list_columns(db):
-    rows = db.execute("SELECT * FROM board_columns ORDER BY position, id").fetchall()
+def list_columns(db, board_id):
+    rows = db.execute("SELECT * FROM board_columns WHERE board_id = ? ORDER BY position, id", (board_id,)).fetchall()
     return [column_dict(r) for r in rows]
 
 
 def column_dict(r):
     return {
         "id": r["id"],
+        "board_id": r["board_id"],
         "name": r["name"],
         "kind": r["kind"],
         "move_roles": [x for x in r["move_roles"].split(",") if x],
@@ -51,25 +53,33 @@ def column_dict(r):
     }
 
 
-def get_column(db, column_id):
+def get_column(db, column_id, board_id=None):
+    try:
+        column_id = int(column_id)
+    except (TypeError, ValueError):
+        return None
     row = db.execute("SELECT * FROM board_columns WHERE id = ?", (column_id,)).fetchone()
-    return column_dict(row) if row else None
+    if row is None or (board_id is not None and row["board_id"] != board_id):
+        return None
+    return column_dict(row)
 
 
-def first_column(db):
+def first_column(db, board_id):
     row = db.execute(
-        "SELECT * FROM board_columns ORDER BY (kind != 'backlog'), position, id LIMIT 1"
+        "SELECT * FROM board_columns WHERE board_id = ? ORDER BY (kind != 'backlog'), position, id LIMIT 1",
+        (board_id,),
     ).fetchone()
     return column_dict(row) if row else None
 
 
-def list_options(db, kind=None):
+def list_options(db, board_id, kind=None):
     if kind:
         rows = db.execute(
-            "SELECT * FROM options WHERE kind = ? ORDER BY position, id", (kind,)
+            "SELECT * FROM options WHERE board_id = ? AND kind = ? ORDER BY position, id", (board_id, kind)
         ).fetchall()
     else:
-        rows = db.execute("SELECT * FROM options ORDER BY kind, position, id").fetchall()
+        rows = db.execute("SELECT * FROM options WHERE board_id = ? ORDER BY kind, position, id",
+                          (board_id,)).fetchall()
     return [
         {
             "id": r["id"],
@@ -82,9 +92,9 @@ def list_options(db, kind=None):
     ]
 
 
-def options_grouped(db):
+def options_grouped(db, board_id):
     grouped = {"priority": [], "category": [], "resolution": [], "server": []}
-    for opt in list_options(db):
+    for opt in list_options(db, board_id):
         grouped[opt["kind"]].append(opt)
     # Уровень приоритета (1–4 полоски): чем выше в списке, тем важнее
     pr = grouped["priority"]
@@ -94,17 +104,17 @@ def options_grouped(db):
     return grouped
 
 
-def get_option(db, option_id, kind, active_only=True):
+def get_option(db, option_id, kind, board_id, active_only=True):
     if option_id in (None, ""):
         return None
     try:
         option_id = int(option_id)
     except (TypeError, ValueError):
         return None
-    sql = "SELECT * FROM options WHERE id = ? AND kind = ?"
+    sql = "SELECT * FROM options WHERE id = ? AND kind = ? AND board_id = ?"
     if active_only:
         sql += " AND is_active = 1"
-    return db.execute(sql, (option_id, kind)).fetchone()
+    return db.execute(sql, (option_id, kind, board_id)).fetchone()
 
 
 def option_name(db, option_id):
@@ -139,10 +149,15 @@ def avatar_url(stored):
     return f"/avatars/{stored}" if stored else None
 
 
-def list_active_users(db):
+def list_board_users(db, board_id):
+    """Участники доски и администраторы сайта (у них доступ ко всем доскам).
+    board_role — роль на этой доске: lead / developer / tester / admin."""
     rows = db.execute(
-        "SELECT id, username, display_name, role, avatar FROM users "
-        "WHERE is_active = 1 AND role != 'pending' ORDER BY display_name COLLATE NOCASE"
+        "SELECT u.id, u.username, u.display_name, u.role, u.avatar, m.role AS board_role FROM users u "
+        "LEFT JOIN board_members m ON m.user_id = u.id AND m.board_id = ? "
+        "WHERE u.is_active = 1 AND u.role != 'pending' AND (m.user_id IS NOT NULL OR u.role = 'admin') "
+        "ORDER BY u.display_name COLLATE NOCASE",
+        (board_id,),
     ).fetchall()
     aliases = {}
     for r in db.execute("SELECT user_id, username FROM username_aliases"):
@@ -150,9 +165,98 @@ def list_active_users(db):
     users = []
     for r in rows:
         u = user_brief(r)
+        u["board_role"] = "admin" if r["role"] == "admin" else r["board_role"]
         u["aliases"] = aliases.get(r["id"], [])  # старые логины — для старых @упоминаний
         users.append(u)
     return users
+
+
+# ---------------------------------------------------------------- доски и доступ
+
+def board_dict(r, role=None):
+    return {"id": r["id"], "name": r["name"], "description": r["description"],
+            "position": r["position"], "my_role": role}
+
+
+def get_board(db, board_id):
+    try:
+        board_id = int(board_id)
+    except (TypeError, ValueError):
+        return None
+    return db.execute("SELECT * FROM boards WHERE id = ?", (board_id,)).fetchone()
+
+
+def board_role(db, user, board_id):
+    """Роль пользователя на доске: admin (администратор сайта), lead, developer, tester или None."""
+    if user is None or not user["is_active"] or user["role"] == "pending":
+        return None
+    if user["role"] == "admin":
+        return "admin"
+    row = db.execute("SELECT role FROM board_members WHERE board_id = ? AND user_id = ?",
+                     (board_id, user["id"])).fetchone()
+    return row["role"] if row else None
+
+
+def boards_for(db, user):
+    """Доски, которые видит пользователь, с его ролью на каждой."""
+    if user is None or user["role"] == "pending":
+        return []
+    if user["role"] == "admin":
+        rows = db.execute("SELECT *, 'admin' AS my_role FROM boards ORDER BY position, id").fetchall()
+    else:
+        rows = db.execute(
+            "SELECT b.*, m.role AS my_role FROM boards b JOIN board_members m ON m.board_id = b.id "
+            "WHERE m.user_id = ? ORDER BY b.position, b.id", (user["id"],)
+        ).fetchall()
+    return [board_dict(r, r["my_role"]) for r in rows]
+
+
+def user_boards(db, user_id):
+    """Доски, где человек участник, с его ролью (для мини-профиля и списка пользователей)."""
+    return [{"id": r["id"], "name": r["name"], "role": r["role"]} for r in db.execute(
+        "SELECT b.id, b.name, m.role FROM board_members m JOIN boards b ON b.id = m.board_id "
+        "WHERE m.user_id = ? ORDER BY b.position, b.id", (user_id,))]
+
+
+# ---------------------------------------------------------------- поля карточек
+
+def field_dict(r):
+    builtin = C.BUILTIN_FIELDS.get(r["key"]) if r["type"] == "builtin" else None
+    return {
+        "id": r["id"],
+        "key": r["key"],
+        "label": r["label"],
+        "type": r["type"],
+        "builtin": bool(builtin),
+        "input": builtin["type"] if builtin else r["type"],  # как показывать в форме
+        "option_kind": builtin.get("option_kind") if builtin else None,
+        "required": bool(r["required"]),
+        "choices": [c for c in r["choices"].split("\n") if c] if r["type"] == "select" else [],
+        "hint": r["hint"],
+        "show_on_card": bool(r["show_on_card"]),
+        "is_active": bool(r["is_active"]),
+        "position": r["position"],
+    }
+
+
+def board_fields(db, board_id, active_only=False):
+    sql = "SELECT * FROM board_fields WHERE board_id = ?"
+    if active_only:
+        sql += " AND is_active = 1"
+    rows = db.execute(sql + " ORDER BY position, id", (board_id,)).fetchall()
+    return [field_dict(r) for r in rows if r["type"] != "builtin" or r["key"] in C.BUILTIN_FIELDS]
+
+
+def card_values(db, card_ids):
+    """Значения своих полей: {card_id: {"field_id": value}}."""
+    if not card_ids:
+        return {}
+    result = {cid: {} for cid in card_ids}
+    marks = ",".join("?" * len(card_ids))
+    for r in db.execute(f"SELECT card_id, field_id, value FROM card_values WHERE card_id IN ({marks})",
+                        tuple(card_ids)):
+        result[r["card_id"]][str(r["field_id"])] = r["value"]
+    return result
 
 
 def username_taken(db, username, except_user_id=None):
@@ -193,7 +297,8 @@ def display_name(db, user_id):
 
 
 def find_mentions(db, *texts):
-    """Ищет @логины в тексте и возвращает строки активных пользователей."""
+    """Ищет @логины в тексте и возвращает строки активных пользователей.
+    Кто из них видит доску, проверяет вызывающий код."""
     names = set()
     for text in texts:
         names.update(m.lower() for m in MENTION_RE.findall(text or ""))
@@ -237,10 +342,11 @@ def tags_for(db, card_ids):
     return result
 
 
-def card_summary(row, tags, short=True):
+def card_summary(row, tags, short=True, values=None):
     desc = row["description"] or ""
     return {
         "id": row["id"],
+        "board_id": row["board_id"],
         "title": row["title"],
         "description": (desc[:280] + "…") if short and len(desc) > 280 else desc,
         "column_id": row["column_id"],
@@ -259,27 +365,29 @@ def card_summary(row, tags, short=True):
         "attachment_count": row["attachment_count"],
         "reopen_count": row["reopen_count"],
         "version": row["version"],
+        "values": values or {},
     }
 
 
-def board_cards(db):
+def board_cards(db, board_id):
     rows = db.execute(
         CARD_SELECT
         + " JOIN board_columns col ON col.id = c.column_id"
-        " WHERE c.archived_at IS NULL AND (col.kind != 'done' OR c.closed_at >= ?)",
-        (done_cutoff(db),),
+        " WHERE c.board_id = ? AND c.archived_at IS NULL AND (col.kind != 'done' OR c.closed_at >= ?)",
+        (board_id, done_cutoff(db)),
     ).fetchall()
-    tags = tags_for(db, [r["id"] for r in rows])
-    return [card_summary(r, tags[r["id"]]) for r in rows]
+    ids = [r["id"] for r in rows]
+    tags, values = tags_for(db, ids), card_values(db, ids)
+    return [card_summary(r, tags[r["id"]], values=values[r["id"]]) for r in rows]
 
 
-def archive_cards(db):
+def archive_cards(db, board_id):
     rows = db.execute(
         CARD_SELECT
         + " JOIN board_columns col ON col.id = c.column_id"
-        " WHERE c.archived_at IS NOT NULL OR (col.kind = 'done' AND c.closed_at < ?)"
+        " WHERE c.board_id = ? AND (c.archived_at IS NOT NULL OR (col.kind = 'done' AND c.closed_at < ?))"
         " ORDER BY COALESCE(c.archived_at, c.closed_at) DESC LIMIT 500",
-        (done_cutoff(db),),
+        (board_id, done_cutoff(db)),
     ).fetchall()
     tags = tags_for(db, [r["id"] for r in rows])
     return [card_summary(r, tags[r["id"]]) for r in rows]
@@ -293,7 +401,8 @@ def card_full(db, card_id):
     row = get_card_row(db, card_id)
     if row is None:
         return None
-    card = card_summary(row, tags_for(db, [card_id])[card_id], short=False)
+    card = card_summary(row, tags_for(db, [card_id])[card_id], short=False,
+                        values=card_values(db, [card_id])[card_id])
     for field in ("steps", "expected", "actual", "build_version", "coords",
                   "static_id", "occurred_at", "frequency", "video_url"):
         card[field] = row[field]
@@ -405,15 +514,16 @@ def list_tags(db):
 
 # ---------------------------------------------------------------- отметка изменений
 
-def board_stamp(db):
+def board_stamp(db, board_id):
     """Короткая строка, которая меняется при любом изменении доски."""
     r = db.execute(
-        "SELECT (SELECT COALESCE(MAX(updated_at), '') FROM cards) AS u,"
-        " (SELECT COUNT(*) FROM cards) AS n,"
+        "SELECT (SELECT COALESCE(MAX(updated_at), '') FROM cards WHERE board_id = :b) AS u,"
+        " (SELECT COUNT(*) FROM cards WHERE board_id = :b) AS n,"
         " (SELECT COALESCE(MAX(id), 0) FROM comments) AS cm,"
         " (SELECT COALESCE(MAX(id), 0) FROM attachments) AS at,"
         " (SELECT COUNT(*) FROM attachments) AS atn,"
         " (SELECT COALESCE(MAX(id), 0) FROM card_history) AS h,"
-        " (SELECT COALESCE(value, '') FROM settings WHERE key = 'config_version') AS cfg"
+        " (SELECT COALESCE(value, '') FROM settings WHERE key = 'config_version') AS cfg",
+        {"b": board_id},
     ).fetchone()
     return "|".join(str(r[k]) for k in ("u", "n", "cm", "at", "atn", "h", "cfg"))

@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 from flask import Flask, jsonify, render_template, request
 from werkzeug.middleware.proxy_fix import ProxyFix
 
-from . import admin, api, audit, auth, db, pages
+from . import admin, api, audit, auth, board_admin, db, pages
 from .discord_api import DiscordBot
 from .notify import Dispatcher
 from .telegram_bot import TelegramBot
@@ -90,6 +90,7 @@ def create_app(test_config=None):
     app.register_blueprint(pages.bp)
     app.register_blueprint(api.bp)
     app.register_blueprint(admin.bp)
+    app.register_blueprint(board_admin.bp)
 
     @app.before_request
     def _before():

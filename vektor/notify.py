@@ -133,11 +133,13 @@ def users_by_ids(db, ids):
     return db.execute(f"SELECT * FROM users WHERE id IN ({marks})", tuple(ids)).fetchall()
 
 
-def subscribers(db, event):
+def subscribers(db, event, board_id):
+    """Подписанные на событие участники доски (и администраторы сайта)."""
     return db.execute(
-        "SELECT * FROM users WHERE is_active = 1 AND role != 'pending' "
-        "AND (',' || notify_events || ',') LIKE ?",
-        (f"%,{event},%",),
+        "SELECT * FROM users u WHERE u.is_active = 1 AND u.role != 'pending' "
+        "AND (',' || u.notify_events || ',') LIKE ? "
+        "AND (u.role = 'admin' OR EXISTS (SELECT 1 FROM board_members m WHERE m.board_id = ? AND m.user_id = u.id))",
+        (f"%,{event},%", board_id),
     ).fetchall()
 
 

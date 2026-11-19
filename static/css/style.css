@@ -22,6 +22,7 @@
   --font: "Inter", "Segoe UI", system-ui, -apple-system, Roboto, Arial, sans-serif;
   --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
   --ease: cubic-bezier(.2, .8, .2, 1);
+  --spring: cubic-bezier(.34, 1.4, .5, 1);
   color-scheme: dark;
 }
 
@@ -117,7 +118,7 @@ kbd {
 .brand-text strong { font-size: 13px; letter-spacing: .08em; }
 .brand-text small { color: var(--text-3); font-size: 11px; }
 .topbar-section { color: var(--text-3); padding-left: 16px; border-left: 1px solid var(--border); font-size: 13px; }
-.topnav { display: flex; gap: 2px; margin-left: 8px; }
+.topnav { display: flex; gap: 2px; margin-left: 8px; min-width: 0; }
 .topnav a {
   display: inline-flex; align-items: center; gap: 6px; padding: 6px 10px; border-radius: 6px;
   color: var(--text-2); text-decoration: none; font-size: 13px;
@@ -223,14 +224,15 @@ img.avatar { object-fit: cover; padding: 0; }
 .card {
   position: relative; display: block; width: 100%; text-align: left; padding: 11px 12px 10px;
   background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; color: var(--text);
-  font: inherit; cursor: pointer; transition: border-color .15s, transform .15s var(--ease), box-shadow .15s, opacity .15s;
-  animation: fadeIn .2s var(--ease);
+  font: inherit; cursor: pointer;
+  transition: border-color .2s, transform .25s var(--spring), box-shadow .25s var(--ease), opacity .2s, background .2s;
 }
-.card:hover { border-color: var(--border-strong); transform: translateY(-1px); box-shadow: 0 6px 18px rgba(0, 0, 0, .35); }
+.card:hover { border-color: var(--border-strong); transform: translateY(-2px); box-shadow: 0 10px 24px rgba(0, 0, 0, .4); }
+.card:active { transform: translateY(0) scale(.985); transition-duration: .08s; }
 .card.dragging { opacity: .4; }
 .card.pending { opacity: .55; pointer-events: none; }
-.card.flash { animation: flash 1.2s var(--ease); }
-.card-top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; font-size: 11px; color: var(--text-3); }
+.card.flash { animation: landed .55s var(--spring), flash 1.4s var(--ease); }
+.card-top { display: flex; align-items: center; gap: 4px 8px; flex-wrap: wrap; margin-bottom: 4px; font-size: 11px; color: var(--text-3); }
 .card-id { font-family: var(--mono); }
 .card-title { font-weight: 600; font-size: 13.5px; line-height: 1.35; margin: 0 0 4px; word-break: break-word; }
 .card-desc {
@@ -238,7 +240,7 @@ img.avatar { object-fit: cover; padding: 0; }
   display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
 }
 .card-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
-.card-foot { display: flex; align-items: center; gap: 10px; color: var(--text-3); font-size: 11.5px; }
+.card-foot { display: flex; align-items: center; gap: 6px 10px; flex-wrap: wrap; color: var(--text-3); font-size: 11.5px; min-width: 0; }
 .card-foot .spacer { flex: 1; }
 .card-meta { display: inline-flex; align-items: center; gap: 3px; }
 .card-meta svg { width: 13px; height: 13px; }
@@ -270,7 +272,7 @@ img.avatar { object-fit: cover; padding: 0; }
 
 .archive { padding: 0 20px 20px; }
 .archive-list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
-.archive-row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 12px 14px; background: var(--surface); border: 0; border-bottom: 1px solid var(--border); color: var(--text); text-align: left; font: inherit; cursor: pointer; }
+.archive-row { display: flex; gap: 8px 12px; flex-wrap: wrap; align-items: center; width: 100%; padding: 12px 14px; background: var(--surface); border: 0; border-bottom: 1px solid var(--border); color: var(--text); text-align: left; font: inherit; cursor: pointer; }
 .archive-row:hover { background: var(--surface-2); }
 .archive-list li:last-child .archive-row { border-bottom: 0; }
 .archive-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -320,7 +322,7 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert
   background: var(--bg); border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
 }
 .tag-input:focus-within { border-color: var(--text); }
-.tag-input input { flex: 1; min-width: 160px; border: 0; height: 24px; padding: 0 4px; background: none; box-shadow: none !important; }
+.tag-input input { flex: 1 1 120px; min-width: 0; border: 0; height: 24px; padding: 0 4px; background: none; box-shadow: none !important; }
 .tag-chips { display: contents; list-style: none; }
 .tag-chip { display: inline-flex; align-items: center; gap: 4px; padding: 2px 4px 2px 8px; border-radius: 12px; background: var(--surface-3); border: 1px solid var(--border-strong); font-size: 12px; }
 .tag-chip button { border: 0; background: none; color: var(--text-3); cursor: pointer; padding: 0 3px; font-size: 13px; line-height: 1; border-radius: 50%; }
@@ -351,7 +353,9 @@ input[type="datetime-local"]::-webkit-calendar-picker-indicator { filter: invert
 .mention-menu li { padding: 6px 8px; border-radius: 6px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
 .mention-menu li[aria-selected="true"], .mention-menu li:hover { background: var(--surface-3); }
 .mention-menu small { color: var(--text-3); }
-.mention { font-weight: 600; color: var(--text); background: var(--surface-3); padding: 0 3px; border-radius: 4px; }
+.mention { font: inherit; font-weight: 600; color: var(--text); background: var(--surface-3); padding: 0 3px; border-radius: 4px; border: 0; }
+button.mention { cursor: pointer; }
+button.mention:hover { background: var(--border-strong); }
 
 /* ---------------------------------------------------------------- модальные окна */
 
@@ -359,7 +363,14 @@ dialog.modal {
   padding: 0; border: 1px solid var(--border-strong); border-radius: 14px; background: var(--surface); color: var(--text);
   width: min(560px, calc(100vw - 24px)); max-height: calc(100vh - 40px); box-shadow: var(--shadow);
 }
-dialog.modal[open] { animation: pop .18s var(--ease); }
+dialog.modal {
+  opacity: 0; transform: translateY(14px) scale(.97);
+  transition: opacity .22s var(--ease), transform .28s var(--spring), overlay .28s allow-discrete, display .28s allow-discrete;
+}
+dialog.modal[open] { opacity: 1; transform: none; }
+@starting-style { dialog.modal[open] { opacity: 0; transform: translateY(14px) scale(.97); } }
+dialog.modal::backdrop { transition: background .25s var(--ease), backdrop-filter .25s, overlay .25s allow-discrete, display .25s allow-discrete; }
+@starting-style { dialog.modal[open]::backdrop { background: rgba(0, 0, 0, 0); backdrop-filter: blur(0); } }
 dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2px); animation: fadeIn .18s; }
 .modal-wide { width: min(940px, calc(100vw - 24px)) !important; }
 .modal-sm { width: min(420px, calc(100vw - 24px)) !important; }
@@ -374,13 +385,16 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 /* подробности */
 .details-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: var(--text-3); font-size: 12px; margin-bottom: 6px; }
 .details-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 16px; }
-.details-grid { display: grid; grid-template-columns: minmax(0, 1fr) 260px; gap: 22px; }
+.details-grid { display: grid; grid-template-columns: minmax(0, 1fr) 280px; gap: 22px; }
+.details-main { min-width: 0; }
 .details-section { margin-bottom: 18px; }
 .details-section h3 { color: var(--text-3); font-size: 11.5px; text-transform: uppercase; letter-spacing: .06em; font-weight: 650; margin-bottom: 6px; }
-.prewrap { white-space: pre-wrap; word-break: break-word; margin: 0; }
-.meta-list { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 8px 12px; font-size: 12.5px; align-content: start; }
-.meta-list dt { color: var(--text-3); }
-.meta-list dd { margin: 0; word-break: break-word; }
+.prewrap { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0; }
+.break { overflow-wrap: anywhere; }
+.meta-list { margin: 0; display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 8px 12px; font-size: 12.5px; align-content: start; }
+.meta-list dt { color: var(--text-3); max-width: 130px; }
+.meta-list dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.meta-list code { overflow-wrap: anywhere; }
 .meta-list select { height: 32px; font-size: 12.5px; line-height: 1.2; padding: 0 30px 0 10px; }
 .side { background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 14px; align-self: start; }
 .tabs-mini { display: flex; gap: 4px; margin-bottom: 10px; border-bottom: 1px solid var(--border); }
@@ -389,9 +403,9 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 .feed { list-style: none; margin: 0 0 12px; padding: 0; display: flex; flex-direction: column; gap: 12px; }
 .feed-item { display: flex; gap: 10px; }
 .feed-body { flex: 1; min-width: 0; }
-.feed-head { display: flex; gap: 8px; align-items: baseline; font-size: 12.5px; }
+.feed-head { display: flex; gap: 6px 8px; align-items: center; flex-wrap: wrap; font-size: 12.5px; }
 .feed-head time { color: var(--text-3); font-size: 11.5px; }
-.feed-text { margin: 2px 0 0; white-space: pre-wrap; word-break: break-word; }
+.feed-text { margin: 2px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .history-item { font-size: 12.5px; color: var(--text-2); }
 .history-item strong { color: var(--text); font-weight: 600; }
 .history-item time { color: var(--text-3); margin-left: 6px; font-size: 11.5px; }
@@ -463,6 +477,7 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 .table .who small { display: block; color: var(--text-3); }
 
 .tabs { display: flex; gap: 4px; margin: 12px 0 16px; border-bottom: 1px solid var(--border); overflow-x: auto; }
+.tabs [role="tab"][hidden] { display: none; }
 .tabs [role="tab"] { border: 0; background: none; color: var(--text-3); padding: 10px 14px; cursor: pointer; font: 600 13.5px var(--font); border-bottom: 2px solid transparent; margin-bottom: -1px; white-space: nowrap; }
 .tabs [role="tab"][aria-selected="true"] { color: var(--text); border-color: var(--text); }
 .settings-list { list-style: none; margin: 12px 0 0; padding: 0; border: 1px solid var(--border); border-radius: 10px; }
@@ -471,9 +486,10 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 .settings-row .grow { flex: 1; min-width: 160px; }
 .settings-row .grow small { display: block; color: var(--text-3); }
 .settings-row.inactive .grow { opacity: .5; }
-.lists-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; }
+.lists-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 16px; }
 .list-box h3 { margin-bottom: 8px; }
-.add-row { display: flex; gap: 8px; margin-top: 8px; }
+.add-row { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.add-row input, .add-row select { flex: 1 1 160px; min-width: 0; }
 .add-row input { height: 32px; }
 
 /* ---------------------------------------------------------------- адаптивность */
@@ -487,10 +503,19 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
   body { font-size: 14.5px; }
   .topbar { padding: 0 12px; gap: 8px; height: 54px; }
   .brand-text { display: none; }
-  .topnav { margin-left: 0; overflow-x: auto; }
-  .topnav a { padding: 6px 8px; }
+  .topnav { margin-left: 0; overflow-x: auto; flex: 1 1 auto; scrollbar-width: none; }
+  .topnav a { padding: 6px 8px; white-space: nowrap; }
+  .topbar-right { gap: 4px; flex: none; }
+  .bell-panel { position: fixed; left: 12px; right: 12px; top: 58px; width: auto; }
   .logout-form .btn { padding: 0 8px; }
-  .board-head { padding: 18px 16px 10px; }
+  .board-head { padding: 12px 16px 10px; }
+  .board-switch { padding: 10px 16px 0; }
+  .details-actions .btn { flex: 1 1 auto; }
+  .details-top .details-myrole { width: 100%; margin-left: 0; }
+  .user-pop { width: calc(100vw - 24px); }
+  .add-member select { flex: 1 1 100%; }
+  .board-picker { width: 100%; }
+  .board-picker select { flex: 1; min-width: 0; }
   .board-head-actions { width: 100%; }
   .board-head-actions .btn-primary { flex: 1; }
   .btn kbd, .search kbd, .hotkeys { display: none; }
@@ -539,3 +564,157 @@ dialog.modal::backdrop { background: rgba(0, 0, 0, .65); backdrop-filter: blur(2
 .audit-details { word-break: break-word; max-width: 420px; }
 .audit-warn td { background: var(--danger-bg); }
 .audit-more { margin-top: 12px; justify-content: center; }
+
+/* ---------------------------------------------------------------- доски */
+
+.board-switch {
+  display: flex; gap: 6px; padding: 16px 20px 0; overflow-x: auto; scrollbar-width: thin;
+}
+.board-tab {
+  flex: none; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--border); color: var(--text-2);
+  text-decoration: none; font-weight: 600; font-size: 13px; background: var(--surface); white-space: nowrap;
+}
+.board-tab:hover { border-color: var(--border-strong); color: var(--text); }
+.board-tab[aria-current="page"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.board-my-role { margin: 4px 0 0; display: flex; align-items: center; gap: 6px; }
+.board-my-role:empty { display: none; }
+.board-picker { display: flex; align-items: center; gap: 8px; }
+.board-picker select { min-width: 200px; max-width: 100%; }
+.board-picker.dim { opacity: .45; }
+.user-boards { display: flex; flex-wrap: wrap; gap: 4px; }
+.user-boards .pill { text-decoration: none; }
+
+/* динамические поля формы встают в общую сетку */
+.form-dynamic { display: contents; }
+.field-check { justify-content: center; }
+.field-check .check { font-size: 13px; color: var(--text); }
+
+/* ---------------------------------------------------------------- роли и люди */
+
+.role-badge {
+  display: inline-flex; align-items: center; padding: 0 6px; height: 17px; border-radius: 5px; font-size: 10.5px;
+  font-weight: 650; letter-spacing: .01em; white-space: nowrap; border: 1px solid var(--border-strong); color: var(--text-2);
+  line-height: 1; vertical-align: middle;
+}
+.role-admin { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+.role-lead { background: var(--surface-3); color: var(--text); border-color: var(--text-2); }
+.role-developer { color: var(--text); }
+.role-tester { color: var(--text-2); border-style: dashed; }
+
+.user-link {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 1px 4px 1px 1px; margin: -1px 0;
+  border: 0; border-radius: 6px; background: none; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; text-align: left;
+}
+.user-link:hover { background: var(--surface-3); }
+.user-link-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.face-avatar { display: inline-grid; padding: 0; border: 0; background: none; border-radius: 50%; cursor: pointer; flex: none; }
+.face-avatar:hover .avatar { border-color: var(--text); }
+.card-person { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.card-person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; max-width: 110px; }
+.card-person .role-badge { height: 15px; font-size: 9.5px; padding: 0 4px; }
+.card-fields { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 8px; }
+.field-pill {
+  display: inline-block; max-width: 100%; padding: 1px 7px; border-radius: 5px; background: var(--surface-3);
+  color: var(--text-2); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.details-people { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; font-size: 12.5px; }
+.details-people > span { display: inline-flex; align-items: center; gap: 4px; min-width: 0; max-width: 100%; }
+.details-myrole { margin-left: auto; display: inline-flex; align-items: center; gap: 4px; }
+.modal-head-main { min-width: 0; flex: 1; }
+.assignee-pick { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; min-width: 0; }
+.avatar-lg { width: 52px; height: 52px; font-size: 20px; }
+
+/* мини-профиль */
+.user-pop {
+  position: fixed; inset: auto; margin: 0; z-index: 1001; width: 300px; max-width: calc(100vw - 16px);
+  padding: 16px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface);
+  color: var(--text); box-shadow: var(--shadow); display: flex; flex-direction: column; gap: 10px;
+  animation: pop .14s var(--ease); overflow: visible;
+}
+.user-pop:focus { outline: none; }
+.user-pop-close { position: absolute; top: 8px; right: 8px; width: 28px; height: 28px; }
+.user-pop-head { display: flex; gap: 12px; align-items: center; padding-right: 24px; }
+.user-pop-id { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.user-pop-id strong { font-size: 15px; overflow-wrap: anywhere; }
+.user-pop-roles { margin-top: 2px; gap: 4px; }
+.user-pop-boards { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.user-pop-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin: 0; }
+.user-pop-stats div { background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.user-pop-stats dt { color: var(--text-3); font-size: 11px; }
+.user-pop-stats dd { margin: 0; font-weight: 700; font-size: 16px; font-variant-numeric: tabular-nums; }
+.user-pop-actions .btn { flex: 1 1 auto; }
+
+/* ---------------------------------------------------------------- анимации */
+
+/* Вход доски: колонки и карточки появляются волной (класс .enter ставит board.js) */
+.board.enter .column { animation: rise .45s var(--ease) both; animation-delay: calc(var(--ci, 0) * 60ms); }
+.board.enter .card { animation: cardIn .45s var(--spring) both; animation-delay: calc(var(--ci, 0) * 60ms + var(--i, 0) * 35ms + 80ms); }
+.archive-list li { animation: rise .35s var(--ease) both; animation-delay: calc(var(--i, 0) * 25ms); }
+@keyframes rise { from { opacity: 0; transform: translateY(12px); } }
+@keyframes cardIn { from { opacity: 0; transform: translateY(10px) scale(.97); } }
+@keyframes landed { 0% { transform: scale(.94); } 60% { transform: scale(1.02); } 100% { transform: none; } }
+
+/* Подробности карточки: разделы выезжают по очереди */
+dialog.modal[open] .details-actions,
+dialog.modal[open] .details-main > *,
+dialog.modal[open] .side { animation: rise .4s var(--ease) both; }
+dialog.modal[open] .details-actions { animation-delay: .05s; }
+dialog.modal[open] .details-main > :nth-child(1) { animation-delay: .08s; }
+dialog.modal[open] .details-main > :nth-child(2) { animation-delay: .12s; }
+dialog.modal[open] .details-main > :nth-child(3) { animation-delay: .16s; }
+dialog.modal[open] .details-main > :nth-child(n+4) { animation-delay: .2s; }
+dialog.modal[open] .side { animation-delay: .12s; }
+.feed-item { animation: rise .3s var(--ease) both; }
+
+/* Колонка, над которой тащат карточку */
+.column { transition: border-color .2s, background .2s, opacity .25s, transform .25s var(--spring); }
+.column.drop-ok { transform: translateY(-2px); }
+.column.drop-over { transform: translateY(-4px) scale(1.01); box-shadow: 0 0 0 1px var(--text), 0 16px 40px rgba(0, 0, 0, .45); }
+.card.dragging { transform: rotate(1.5deg) scale(.98); }
+
+/* Кнопки, вкладки, переключатели */
+.btn { transition: background .2s, border-color .2s, transform .15s var(--spring), opacity .2s, box-shadow .2s; }
+.btn:hover { transform: translateY(-1px); }
+.btn:active { transform: translateY(0) scale(.97); }
+.btn-primary:hover { box-shadow: 0 6px 18px rgba(255, 255, 255, .12); }
+.icon-btn { transition: background .2s, color .2s, transform .15s var(--spring); }
+.icon-btn:active { transform: scale(.9); }
+.seg, .board-tab, .chip-btn, .column-tabs button, .tabs [role="tab"], .tabs-mini button {
+  transition: background .25s var(--ease), color .2s, border-color .25s, transform .15s var(--spring);
+}
+.board-tab:active, .chip-btn:active, .column-tabs button:active, .seg:active { transform: scale(.95); }
+.user-link, .face-avatar .avatar, .mention { transition: background .2s, border-color .2s, transform .2s var(--spring); }
+.face-avatar:hover .avatar { transform: scale(1.12); }
+.tag, .pill, .field-pill { transition: border-color .2s, background .2s; }
+input, select, textarea { transition: border-color .2s, box-shadow .25s var(--ease), background .2s; }
+
+/* Колокольчик подпрыгивает, когда пришло новое уведомление */
+.bell-count.bump { animation: bump .6s var(--spring); }
+@keyframes bump { 0% { transform: scale(.4); } 50% { transform: scale(1.35); } 100% { transform: none; } }
+#bell-btn.ring svg { animation: ring .7s var(--ease); transform-origin: 50% 10%; }
+@keyframes ring { 0%, 100% { transform: none; } 20% { transform: rotate(14deg); } 40% { transform: rotate(-12deg); } 60% { transform: rotate(8deg); } 80% { transform: rotate(-4deg); } }
+.bell-panel, .mention-menu { animation: pop .2s var(--spring); transform-origin: top right; }
+
+/* Загрузка: мерцающие заглушки вместо пустоты */
+.skeleton-col { flex: 0 0 300px; display: flex; flex-direction: column; gap: 8px; padding: 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--surface); }
+.skeleton { border-radius: 9px; background: linear-gradient(90deg, var(--surface-2) 0%, var(--surface-3) 50%, var(--surface-2) 100%); background-size: 200% 100%; animation: shimmer 1.3s linear infinite; }
+.skeleton-title { height: 14px; width: 45%; }
+.skeleton-card { height: 86px; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+@media (max-width: 760px) { .skeleton-col:not(:first-child) { display: none; } .skeleton-col { flex: 1; } }
+
+/* Плавная смена вида (Доска ⇄ Архив, колонки на телефоне) через View Transitions */
+::view-transition-old(root) { animation: vtOut .18s var(--ease) both; }
+::view-transition-new(root) { animation: vtIn .28s var(--ease) both; }
+@keyframes vtOut { to { opacity: 0; transform: translateY(-4px); } }
+@keyframes vtIn { from { opacity: 0; transform: translateY(6px); } }
+
+/* Уведомления-тосты: мягкий «пружинный» выезд */
+.toast { animation: toastIn .35s var(--spring); }
+
+/* Мини-профиль и полоски приоритета */
+.user-pop { animation: pop .22s var(--spring); }
+.prio-bars i { transition: background .3s, height .3s var(--spring); }
+
+/* Заголовок, на который переводится фокус при открытии окна, не обводим рамкой */
+[tabindex="-1"]:focus, [tabindex="-1"]:focus-visible { outline: none; }

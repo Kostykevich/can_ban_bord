@@ -3,11 +3,12 @@
 import re
 
 from flask import (Blueprint, abort, current_app, g, jsonify, render_template,
-                   send_from_directory)
+                   request, send_from_directory)
 
 from . import models as M
 from .auth import admin_required, csrf_token
-from .constants import COLUMN_KINDS, FREQUENCIES, LIMITS, OPTION_KINDS, POLL_SECONDS, ROLES
+from .constants import (BOARD_ROLES, BUILTIN_FIELDS, COLUMN_KINDS, CUSTOM_FIELD_TYPES, FREQUENCIES,
+                        LIMITS, OPTION_KINDS, POLL_SECONDS, ROLES)
 from .db import get_db
 from .notify import CHANNEL_EVENTS, EVENTS
 
@@ -31,16 +32,27 @@ def boot_data(**extra):
     }
 
 
+def _board_page(open_card=None, board_id=None):
+    db = get_db()
+    boards = M.boards_for(db, g.user)
+    return render_template("board.html", section="Доска задач", boards=boards,
+                           boot=boot_data(open_card=open_card, board_id=board_id, boards=boards,
+                                          board_roles=BOARD_ROLES,
+                                          builtin_labels={k: f["label"].lower() for k, f in BUILTIN_FIELDS.items()}))
+
+
 @bp.route("/")
 def board():
-    return render_template("board.html", boot=boot_data(open_card=None), section="Доска задач")
+    return _board_page(board_id=request.args.get("board", type=int))
 
 
 @bp.route("/card/<int:card_id>")
 def card(card_id):
-    if get_db().execute("SELECT 1 FROM cards WHERE id = ?", (card_id,)).fetchone() is None:
+    db = get_db()
+    row = db.execute("SELECT board_id FROM cards WHERE id = ?", (card_id,)).fetchone()
+    if row is None or M.board_role(db, g.user, row["board_id"]) is None:
         abort(404)
-    return render_template("board.html", boot=boot_data(open_card=card_id), section="Доска задач")
+    return _board_page(open_card=card_id, board_id=row["board_id"])
 
 
 @bp.route("/profile")
@@ -65,6 +77,8 @@ def profile():
         discord_login=bool(current_app.config.get("DISCORD_CLIENT_ID")),
         discord_bot=notifier.discord is not None,
         telegram_bot=notifier.telegram is not None,
+        telegram_problem=(notifier.telegram.status_text()
+                          if notifier.telegram is not None and not notifier.telegram.username else ""),
     )
     if user["role"] == "admin":
         data["audit_users"] = [{"id": r["id"], "name": r["display_name"], "username": r["username"]}
@@ -80,9 +94,17 @@ def admin_users():
 
 
 @bp.route("/admin/settings")
-@admin_required
 def admin_settings():
-    data = boot_data(column_kinds=COLUMN_KINDS, option_kinds=OPTION_KINDS, channel_events=CHANNEL_EVENTS)
+    """Настройки: администратор видит всё, руководитель — только свои доски."""
+    db = get_db()
+    managed = [b for b in M.boards_for(db, g.user) if b["my_role"] in ("admin", "lead")]
+    if not managed and g.user["role"] != "admin":
+        abort(403)
+    data = boot_data(column_kinds=COLUMN_KINDS, option_kinds=OPTION_KINDS, channel_events=CHANNEL_EVENTS,
+                     boards=managed, board_roles=BOARD_ROLES,
+                     builtin_fields={key: f["label"] for key, f in BUILTIN_FIELDS.items()},
+                     field_types=CUSTOM_FIELD_TYPES, is_admin=g.user["role"] == "admin",
+                     board_id=request.args.get("board", type=int))
     return render_template("admin_settings.html", boot=data, section="Настройки")
 
 
@@ -131,7 +153,11 @@ def inject():
         if g.user["role"] == "admin":
             pending = db.execute("SELECT COUNT(*) FROM users WHERE role = 'pending' AND is_active = 1").fetchone()[0]
     settings = {}
+    can_settings = False
     if getattr(g, "user", None) is not None:
-        settings = M.get_settings(get_db())
+        db = get_db()
+        settings = M.get_settings(db)
+        can_settings = g.user["role"] == "admin" or db.execute(
+            "SELECT 1 FROM board_members WHERE user_id = ? AND role = 'lead'", (g.user["id"],)).fetchone() is not None
     return {"csrf_token": csrf_token, "unread_count": unread, "pending_count": pending,
-            "role_labels": ROLES, "site_settings": settings}
+            "role_labels": ROLES, "site_settings": settings, "can_settings": can_settings}

@@ -7,10 +7,14 @@
 
 Бот работает через long polling (getUpdates) в фоновом потоке — не нужен
 публичный адрес и HTTPS-вебхук, поэтому работает и на локальном ПК.
+
+Если хостинг блокирует api.telegram.org, укажите прокси в .env: TELEGRAM_PROXY
+(или общий HTTPS_PROXY). Проверка связи: scripts/check_telegram.py
 """
 
 import html
 import json
+import os
 import threading
 import time
 import urllib.error
@@ -24,6 +28,19 @@ class TelegramError(Exception):
     pass
 
 
+def proxy_url():
+    """Прокси для связи с Telegram, если хостинг его блокирует."""
+    return (os.environ.get("TELEGRAM_PROXY") or os.environ.get("HTTPS_PROXY")
+            or os.environ.get("https_proxy") or "").strip()
+
+
+def _opener():
+    proxy = proxy_url()
+    if proxy:
+        return urllib.request.build_opener(urllib.request.ProxyHandler({"https": proxy, "http": proxy}))
+    return urllib.request.build_opener()
+
+
 class TelegramBot:
     def __init__(self, token, db_path, public_url=""):
         self.token = token
@@ -31,13 +48,33 @@ class TelegramBot:
         self.public_url = public_url.rstrip("/")
         self.username = None
         self.online = False
+        self.stopped = False      # неверный токен — бот больше не пытается подключиться
+        self.last_error = ""      # последняя ошибка связи (без токена)
+        self.started = False
+
+    def status_text(self):
+        """Понятное объяснение для сайта, почему бот сейчас не работает."""
+        if self.stopped:
+            return ("Telegram-бот выключен: Telegram не принял TELEGRAM_BOT_TOKEN. Администратору: "
+                    "получите новый токен у @BotFather, вставьте в .env и перезапустите сайт.")
+        if not self.started:
+            return "Telegram-бот не запущен. Администратору: перезапустите сайт (serve.py)."
+        if self.last_error:
+            hint = ""
+            if "недоступен" in self.last_error or "timed out" in self.last_error.lower():
+                hint = (" Похоже, хостинг блокирует Telegram — администратору нужно указать прокси "
+                        "(TELEGRAM_PROXY в .env). Проверка: scripts\\check_telegram.py")
+            elif "409" in self.last_error:
+                hint = " Этот же бот запущен где-то ещё (например, на ПК). Остановите вторую копию."
+            return f"Telegram-бот не может подключиться: {self.last_error}.{hint}"
+        return "Telegram-бот ещё подключается. Попробуйте через несколько секунд."
 
     def _call(self, method, params=None, timeout=15):
         url = f"https://api.telegram.org/bot{self.token}/{method}"
         data = json.dumps(params or {}).encode()
         req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with _opener().open(req, timeout=timeout) as resp:
                 body = json.loads(resp.read())
         except urllib.error.HTTPError as err:
             try:
@@ -48,6 +85,8 @@ class TelegramBot:
             raise TelegramError(f"Telegram {err.code}: {body.get('description', '')}") from None
         except urllib.error.URLError as err:
             raise TelegramError(f"Telegram недоступен: {err.reason}") from None
+        except (TimeoutError, OSError) as err:
+            raise TelegramError(f"Telegram недоступен: {err}") from None
         if not body.get("ok"):
             raise TelegramError(body.get("description", "ошибка Telegram"))
         return body["result"]
@@ -63,6 +102,7 @@ class TelegramBot:
     # ------------------------------------------------------------ приём команд
 
     def start_polling(self, log=print):
+        self.started = True
         thread = threading.Thread(target=self._poll_forever, args=(log,), daemon=True,
                                   name="telegram-poller")
         thread.start()
@@ -82,6 +122,7 @@ class TelegramBot:
                     params["offset"] = offset
                 updates = self._call("getUpdates", params, timeout=35)
                 self.online = True
+                self.last_error = ""
                 delay = 5
                 for update in updates:
                     offset = update["update_id"] + 1
@@ -92,7 +133,9 @@ class TelegramBot:
             except TelegramError as err:
                 self.online = False
                 text = str(err)
-                if "401" in text or "Unauthorized" in text:
+                self.last_error = text
+                if "401" in text or "Unauthorized" in text or "404" in text:
+                    self.stopped = True
                     log("[Telegram] Неверный TELEGRAM_BOT_TOKEN — бот остановлен")
                     return
                 if "409" in text:
@@ -104,6 +147,7 @@ class TelegramBot:
                 delay = min(delay * 2, 120)
             except Exception as err:
                 self.online = False
+                self.last_error = err.__class__.__name__
                 log(f"[Telegram] {err.__class__.__name__}. Повтор через {delay} с")
                 time.sleep(delay)
                 delay = min(delay * 2, 120)

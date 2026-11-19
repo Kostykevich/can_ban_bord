@@ -2,6 +2,9 @@
 
 Коды ответов: 400 — ошибка в данных, 401 — не вошёл, 403 — нет прав,
 404 — не найдено, 409 — конфликт (карточку уже изменил кто-то другой).
+
+Права зависят от роли на доске карточки (см. permissions.py). Карточки чужих досок
+для не-участника выглядят как несуществующие (404).
 """
 
 import os
@@ -16,8 +19,8 @@ from . import models as M
 from . import notify as N
 from . import permissions as P
 from .auth import USERNAME_RE
-from .constants import (FREQUENCIES, LIMITS, MAX_ATTACHMENTS_PER_CARD,
-                        MAX_IMAGE_BYTES)
+from .constants import (BOARD_ROLES, BUILTIN_FIELDS, CUSTOM_LIMITS, FREQUENCIES, LIMITS,
+                        MAX_ATTACHMENTS_PER_CARD, MAX_IMAGE_BYTES, ROLES)
 from .db import get_db, utcnow
 
 bp = Blueprint("api", __name__, url_prefix="/api")
@@ -25,24 +28,15 @@ bp = Blueprint("api", __name__, url_prefix="/api")
 FIELD_LABELS = {
     "title": "Название",
     "description": "Описание",
-    "steps": "Шаги воспроизведения",
-    "expected": "Ожидаемый результат",
-    "actual": "Фактический результат",
-    "build_version": "Версия сборки",
-    "coords": "Координаты",
-    "static_id": "Static ID",
-    "occurred_at": "Время происшествия",
-    "frequency": "Частота",
-    "video_url": "Видео",
-    "server_id": "Сервер",
     "priority_id": "Приоритет",
-    "category_id": "Категория",
     "tags": "Теги",
+    **{key: f["label"] for key, f in BUILTIN_FIELDS.items()},
 }
-TEXT_FIELDS = ["title", "description", "steps", "expected", "actual", "build_version",
-               "coords", "static_id", "occurred_at", "video_url"]
+BUILTIN_TEXT = ["steps", "expected", "actual", "build_version", "coords", "static_id", "occurred_at", "video_url"]
 LONG_FIELDS = {"description", "steps", "expected", "actual"}
 OPTION_FIELDS = {"priority_id": "priority", "category_id": "category", "server_id": "server"}
+URL_RE = re.compile(r"^https?://\S+$")
+DATETIME_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(T\d{2}:\d{2}(:\d{2})?)?$")
 
 
 # ---------------------------------------------------------------- помощники
@@ -59,14 +53,37 @@ def body():
     return data if isinstance(data, dict) else {}
 
 
-def require_worker():
-    if not P.is_worker(g.user):
-        return fail("Недостаточно прав.", 403)
-    return None
-
-
 def load_card(card_id):
     return get_db().execute("SELECT * FROM cards WHERE id = ?", (card_id,)).fetchone()
+
+
+def card_access(card_id, need_member=True):
+    """Карточка и роль на её доске. Возвращает (card, role, ошибка)."""
+    card = load_card(card_id)
+    if card is None:
+        return None, None, fail("Карточка не найдена.", 404)
+    role = M.board_role(get_db(), g.user, card["board_id"])
+    if role is None:
+        return None, None, fail("Карточка не найдена.", 404)  # не выдаём, что она существует
+    g.audit_board_id = card["board_id"]
+    return card, role, None
+
+
+def board_access(board_id=None):
+    """Доска из параметра (или первая доступная) и роль на ней. Возвращает (board, role, ошибка)."""
+    db = get_db()
+    if board_id in (None, ""):
+        boards = M.boards_for(db, g.user)
+        if not boards:
+            return None, None, fail("Вас ещё не добавили ни на одну доску. Напишите администратору.", 404)
+        board_id = boards[0]["id"]
+    board = M.get_board(db, board_id)
+    if board is None:
+        return None, None, fail("Доска не найдена.", 404)
+    role = M.board_role(db, g.user, board["id"])
+    if role is None:
+        return None, None, fail("У вас нет доступа к этой доске.", 403)
+    return board, role, None
 
 
 def touch(db, card_id):
@@ -80,40 +97,100 @@ def clean_text(value, limit):
     return text[:limit + 1]
 
 
-def validate_card(db, data, current=None):
-    """Проверяет поля карточки. current — текущая строка при редактировании."""
+def custom_value(field, raw):
+    """Проверяет значение своего поля. Возвращает (значение, ошибка)."""
+    ftype = field["type"]
+    if ftype == "checkbox":
+        return ("1" if raw in (True, 1, "1", "true", "on", "да") else ""), None
+    text = clean_text(raw, CUSTOM_LIMITS.get(ftype, 300))
+    if not text:
+        return "", None
+    limit = CUSTOM_LIMITS.get(ftype, 300)
+    if len(text) > limit:
+        return text, f"Не длиннее {limit} символов."
+    if ftype == "url" and not URL_RE.match(text):
+        return text, "Ссылка должна начинаться с http:// или https://"
+    if ftype == "number":
+        try:
+            num = float(text.replace(",", ".").replace(" ", ""))
+        except ValueError:
+            return text, "Введите число."
+        return (str(int(num)) if num.is_integer() else str(num)), None
+    if ftype == "select" and text not in field["choices"]:
+        return text, "Выберите значение из списка."
+    if ftype == "datetime" and not DATETIME_RE.match(text):
+        return text, "Неверная дата."
+    return text, None
+
+
+def validate_card(db, data, board_id, fields, current=None, current_values=None):
+    """Проверяет поля карточки по настройкам доски. current — текущая строка при редактировании.
+    Значения своих полей возвращаются с ключами f<id>."""
     values, errors = {}, {}
-    for field in TEXT_FIELDS:
-        if field not in data and current is not None:
+    active = {f["key"]: f for f in fields if f["is_active"]}
+    creating = current is None
+
+    for field in ["title", "description"] + [k for k in BUILTIN_TEXT if k in active]:
+        if field not in data and not creating:
             continue
-        text = clean_text(data.get(field), LIMITS[field])
-        if len(text) > LIMITS[field]:
-            errors[field] = f"Не длиннее {LIMITS[field]} символов."
+        limit = LIMITS[field]
+        text = clean_text(data.get(field), limit)
+        if len(text) > limit:
+            errors[field] = f"Не длиннее {limit} символов."
         values[field] = text
     for field in ("title", "description"):
         if field in values and not values[field]:
             errors[field] = "Обязательное поле."
-    if values.get("video_url") and not re.match(r"^https?://\S+$", values["video_url"]):
+    if values.get("video_url") and not URL_RE.match(values["video_url"]):
         errors["video_url"] = "Ссылка должна начинаться с http:// или https://"
 
-    if "frequency" in data or current is None:
+    if "frequency" in active and ("frequency" in data or creating):
         freq = data.get("frequency") or "unknown"
         if freq not in FREQUENCIES:
             errors["frequency"] = "Неизвестное значение."
         values["frequency"] = freq
 
     for field, kind in OPTION_FIELDS.items():
-        if field not in data:
+        if field not in data or (field != "priority_id" and field not in active):
             continue
         raw = data.get(field)
-        if current is not None and str(raw) == str(current[field]):
+        if not creating and str(raw) == str(current[field]):
             values[field] = current[field]  # оставить прежнее, даже если его отключили
             continue
-        opt = M.get_option(db, raw, kind)
+        opt = M.get_option(db, raw, kind, board_id)
         if opt is None:
             errors[field] = "Выберите значение из списка."
         else:
             values[field] = opt["id"]
+
+    # свои поля доски: {"fields": {"12": "значение"}}
+    raw_custom = data.get("fields") if isinstance(data.get("fields"), dict) else {}
+    for f in active.values():
+        if f["builtin"]:
+            continue
+        sid = str(f["id"])
+        if sid not in raw_custom and not creating:
+            continue
+        value, err = custom_value(f, raw_custom.get(sid))
+        if err:
+            errors[f["key"]] = err
+        values[f["key"]] = value
+
+    # обязательные поля (проверяем итоговое значение: новое или прежнее)
+    for f in active.values():
+        if not f["required"]:
+            continue
+        key = f["key"]
+        if key in values:
+            final = values[key]
+        elif creating:
+            final = ""
+        elif f["builtin"]:
+            final = current[key]
+        else:
+            final = (current_values or {}).get(str(f["id"]), "")
+        if final in (None, "") and key not in errors:
+            errors[key] = "Обязательное поле."
 
     if "tags" in data:
         tags = data.get("tags")
@@ -127,98 +204,147 @@ def validate_card(db, data, current=None):
     return values, errors
 
 
-def default_option(db, kind, name):
+def default_option(db, board_id, kind, name):
     row = db.execute(
-        "SELECT id FROM options WHERE kind = ? AND is_active = 1 ORDER BY (name != ?), position LIMIT 1",
-        (kind, name),
+        "SELECT id FROM options WHERE board_id = ? AND kind = ? AND is_active = 1 "
+        "ORDER BY (name != ?), position LIMIT 1",
+        (board_id, kind, name),
     ).fetchone()
     return row["id"] if row else None
 
 
-def user_can_be_assigned(db, user_id):
-    row = db.execute(
-        "SELECT * FROM users WHERE id = ? AND is_active = 1 AND role IN ('developer', 'admin', 'tester')",
-        (user_id,),
-    ).fetchone()
+def user_can_be_assigned(db, user_id, board_id):
+    row = M.get_user(db, user_id)
+    if row is None or M.board_role(db, row, board_id) is None:
+        return None
     return row
 
 
-def card_permissions(db, card_row):
+def with_access(db, rows, board_id):
+    """Оставляет только тех, кто видит доску (участники и администраторы)."""
+    return [u for u in rows if u is not None and M.board_role(db, u, board_id) is not None]
+
+
+def custom_keys(fields):
+    return [f["key"] for f in fields if not f["builtin"] and f["is_active"]]
+
+
+def card_permissions(db, card_row, role):
     user = g.user
-    columns = M.list_columns(db)
+    columns = M.list_columns(db, card_row["board_id"])
+    fields = M.board_fields(db, card_row["board_id"])
     current = next((c for c in columns if c["id"] == card_row["column_id"]), None)
     moves = []
     for col in columns:
-        if col["id"] == card_row["column_id"] or not P.can_enter_column(user, col):
+        if col["id"] == card_row["column_id"] or not P.can_enter_column(role, col):
             continue
         rules = P.transition_rules(current, col) if current else {"needs_comment": False,
                                                                      "needs_resolution": col["kind"] == "done",
                                                                      "is_return": False}
         moves.append({"column_id": col["id"], **rules})
     return {
-        "editable": sorted(P.editable_fields(user, card_row["author_id"])),
+        "role": role,
+        "editable": sorted(P.editable_fields(role, user["id"], card_row["author_id"], custom_keys(fields))),
         "moves": moves,
-        "can_take": P.can_assign(user, card_row["assignee_id"], user["id"]) and card_row["assignee_id"] != user["id"],
-        "can_release": card_row["assignee_id"] == user["id"] and P.can_assign(user, user["id"], None),
-        "can_assign_any": P.is_admin(user),
-        "can_comment": P.is_worker(user),
-        "can_upload": P.is_worker(user),
-        "can_archive": P.is_admin(user),
+        "can_take": P.can_assign(role, user["id"], card_row["assignee_id"], user["id"])
+                    and card_row["assignee_id"] != user["id"],
+        "can_release": card_row["assignee_id"] == user["id"] and P.can_assign(role, user["id"], user["id"], None),
+        "can_assign_any": P.is_manager(role),
+        "can_comment": P.is_member(role),
+        "can_upload": P.is_member(role),
+        "can_archive": P.is_manager(role),
     }
 
 
-def full_card_response(db, card_id, status=200):
+def full_card_response(db, card_id, status=200, role=None):
     card = M.card_full(db, card_id)
-    card["permissions"] = card_permissions(db, load_card(card_id))
+    if role is None:
+        role = M.board_role(db, g.user, card["board_id"])
+    card["permissions"] = card_permissions(db, load_card(card_id), role)
     for att in card["attachments"]:
-        att["can_delete"] = P.can_delete_attachment(g.user, att["uploader_id"])
+        att["can_delete"] = P.can_delete_attachment(role, g.user["id"], att["uploader_id"])
     return jsonify(card), status
 
 
-def mention_notify(db, card_id, title, texts, old_texts=()):
-    """Уведомляет только тех, кого упомянули впервые (не повторно при правке)."""
-    new_users = M.find_mentions(db, *texts)
+def mention_notify(db, card_id, board_id, title, texts, old_texts=()):
+    """Уведомляет только тех, кого упомянули впервые (не повторно при правке) и кто видит доску."""
+    new_users = with_access(db, M.find_mentions(db, *texts), board_id)
     old_ids = {u["id"] for u in M.find_mentions(db, *old_texts)} if old_texts else set()
     targets = [u for u in new_users if u["id"] not in old_ids]
     return N.notify_users(db, "mention", card_id, title, g.user, targets,
                           f"{g.user['display_name']} упомянул(а) вас")
 
 
+def save_custom_values(db, card_id, values):
+    """Сохраняет значения своих полей (ключи f<id>). Пустое значение удаляет запись."""
+    for key, value in values.items():
+        if not key.startswith(P.CUSTOM_PREFIX) or not key[1:].isdigit():
+            continue
+        field_id = int(key[1:])
+        if value in (None, ""):
+            db.execute("DELETE FROM card_values WHERE card_id = ? AND field_id = ?", (card_id, field_id))
+        else:
+            db.execute(
+                "INSERT INTO card_values (card_id, field_id, value) VALUES (?, ?, ?) "
+                "ON CONFLICT(card_id, field_id) DO UPDATE SET value = excluded.value",
+                (card_id, field_id, value),
+            )
+
+
+def unread_count(db):
+    return db.execute(
+        "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL", (g.user["id"],)
+    ).fetchone()[0]
+
+
 # ---------------------------------------------------------------- доска
+
+@bp.get("/boards")
+def boards():
+    return jsonify(boards=M.boards_for(get_db(), g.user))
+
 
 @bp.get("/board")
 def board():
     db = get_db()
-    columns = M.list_columns(db)
+    b, role, err = board_access(request.args.get("board_id"))
+    if err:
+        return err
+    columns = M.list_columns(db, b["id"])
     for col in columns:
-        col["can_enter"] = P.can_enter_column(g.user, col)
-    unread = db.execute(
-        "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL", (g.user["id"],)
-    ).fetchone()[0]
+        col["can_enter"] = P.can_enter_column(role, col)
     return jsonify(
-        cards=M.board_cards(db),
+        board=M.board_dict(b, role),
+        boards=M.boards_for(db, g.user),
+        my_role=role,
+        can_manage=P.is_manager(role),
+        cards=M.board_cards(db, b["id"]),
         columns=columns,
-        options=M.options_grouped(db),
+        options=M.options_grouped(db, b["id"]),
+        fields=M.board_fields(db, b["id"]),
         tags=M.list_tags(db),
-        users=M.list_active_users(db),
+        users=M.list_board_users(db, b["id"]),
         settings=M.get_settings(db),
-        stamp=M.board_stamp(db),
-        unread=unread,
+        stamp=M.board_stamp(db, b["id"]),
+        unread=unread_count(db),
     )
 
 
 @bp.get("/board/stamp")
 def board_stamp():
     db = get_db()
-    unread = db.execute(
-        "SELECT COUNT(*) FROM notifications WHERE user_id = ? AND read_at IS NULL", (g.user["id"],)
-    ).fetchone()[0]
-    return jsonify(stamp=M.board_stamp(db), unread=unread)
+    b, _role, err = board_access(request.args.get("board_id"))
+    if err:
+        return jsonify(stamp="", unread=unread_count(db))
+    return jsonify(stamp=M.board_stamp(db, b["id"]), unread=unread_count(db))
 
 
 @bp.get("/archive")
 def archive():
-    return jsonify(cards=M.archive_cards(get_db()))
+    b, _role, err = board_access(request.args.get("board_id"))
+    if err:
+        return err
+    return jsonify(cards=M.archive_cards(get_db(), b["id"]))
 
 
 @bp.get("/similar")
@@ -226,7 +352,8 @@ def similar():
     q = (request.args.get("q") or "").strip()[:150]
     words = [w for w in re.findall(r"\w+", q.lower()) if len(w) >= 3][:6]
     exclude = request.args.get("exclude", type=int)
-    if not words:
+    b, _role, err = board_access(request.args.get("board_id"))
+    if err or not words:
         return jsonify(cards=[])
     db = get_db()
     clause = " OR ".join("lower(c.title) LIKE ?" for _ in words)
@@ -234,9 +361,9 @@ def similar():
     rows = db.execute(
         "SELECT c.id, c.title, c.column_id, col.name AS column_name, col.kind FROM cards c "
         "JOIN board_columns col ON col.id = c.column_id "
-        f"WHERE c.archived_at IS NULL AND ({clause}) AND c.id != ? "
+        f"WHERE c.board_id = ? AND c.archived_at IS NULL AND ({clause}) AND c.id != ? "
         "ORDER BY (col.kind = 'done'), c.id DESC LIMIT 30",
-        (*params, exclude or 0),
+        (b["id"], *params, exclude or 0),
     ).fetchall()
     # Сортируем по числу совпавших слов
     scored = sorted(rows, key=lambda r: -sum(w in r["title"].lower() for w in words))[:5]
@@ -244,24 +371,72 @@ def similar():
                            "closed": r["kind"] == "done"} for r in scored])
 
 
+# ---------------------------------------------------------------- мини-профиль
+
+@bp.get("/users/<int:user_id>")
+def user_card(user_id):
+    """Карточка человека: имя, роли, доски (только общие с тем, кто смотрит), счётчики задач."""
+    db = get_db()
+    user = M.get_user(db, user_id)
+    if user is None or user["role"] == "pending":
+        return fail("Пользователь не найден.", 404)
+    visible = {b["id"] for b in M.boards_for(db, g.user)}
+    boards = [b for b in M.user_boards(db, user_id) if b["id"] in visible]
+    if user["role"] == "admin":
+        boards = [{"id": b["id"], "name": b["name"], "role": "admin"} for b in M.boards_for(db, g.user)]
+    board_id = request.args.get("board_id", type=int)
+    stats = None
+    if board_id in visible:
+        r = db.execute(
+            "SELECT"
+            " (SELECT COUNT(*) FROM cards c JOIN board_columns col ON col.id = c.column_id"
+            "   WHERE c.board_id = :b AND c.assignee_id = :u AND c.archived_at IS NULL AND col.kind != 'done') AS active,"
+            " (SELECT COUNT(*) FROM cards c JOIN board_columns col ON col.id = c.column_id"
+            "   WHERE c.board_id = :b AND c.assignee_id = :u AND col.kind = 'done') AS closed,"
+            " (SELECT COUNT(*) FROM cards WHERE board_id = :b AND author_id = :u) AS created",
+            {"b": board_id, "u": user_id},
+        ).fetchone()
+        stats = {"active": r["active"], "closed": r["closed"], "created": r["created"]}
+    return jsonify(
+        id=user["id"],
+        name=user["display_name"],
+        username=user["username"],
+        avatar=M.avatar_url(user["avatar"]),
+        role=user["role"],
+        role_label=ROLES.get(user["role"], user["role"]),
+        is_active=bool(user["is_active"]),
+        boards=[{**b, "role_label": "Администратор" if b["role"] == "admin" else BOARD_ROLES.get(b["role"], b["role"])}
+                for b in boards],
+        board_role=M.board_role(db, user, board_id) if board_id in visible else None,
+        discord=bool(user["discord_id"]),
+        telegram=bool(user["telegram_chat_id"]),
+        created_at=user["created_at"],
+        last_login_at=user["last_login_at"],
+        stats=stats,
+    )
+
+
 # ---------------------------------------------------------------- карточки
 
 @bp.get("/cards/<int:card_id>")
 def card_detail(card_id):
-    db = get_db()
-    if load_card(card_id) is None:
-        return fail("Карточка не найдена.", 404)
-    return full_card_response(db, card_id)
+    _card, role, err = card_access(card_id)
+    if err:
+        return err
+    return full_card_response(get_db(), card_id, role=role)
 
 
 @bp.post("/cards")
 def card_create():
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
     data = body()
-    values, errors = validate_card(db, data)
+    b, role, err = board_access(data.get("board_id"))
+    if err:
+        return err
+    board_id = b["id"]
+    g.audit_board_id = board_id
+    fields = M.board_fields(db, board_id)
+    values, errors = validate_card(db, data, board_id, fields)
     assignee_id = data.get("assignee_id") or None
     if assignee_id is not None:
         try:
@@ -269,34 +444,35 @@ def card_create():
         except (TypeError, ValueError):
             errors["assignee_id"] = "Неверный исполнитель."
         else:
-            if not P.can_assign(g.user, None, assignee_id):
+            if not P.can_assign(role, g.user["id"], None, assignee_id):
                 errors["assignee_id"] = "Вы не можете назначить этого исполнителя."
-            elif user_can_be_assigned(db, assignee_id) is None:
-                errors["assignee_id"] = "Пользователь не найден."
+            elif user_can_be_assigned(db, assignee_id, board_id) is None:
+                errors["assignee_id"] = "Этот человек не участник доски."
     if errors:
         return fail("Проверьте поля формы.", 400, errors)
 
-    column = M.first_column(db)
+    column = M.first_column(db, board_id)
     if column is None:
-        return fail("На доске нет ни одной колонки. Попросите администратора создать её.", 409)
+        return fail("На доске нет ни одной колонки. Попросите руководителя доски создать её.", 409)
     now = utcnow()
     cur = db.execute(
-        "INSERT INTO cards (title, description, steps, expected, actual, column_id, priority_id, "
+        "INSERT INTO cards (board_id, title, description, steps, expected, actual, column_id, priority_id, "
         "category_id, server_id, build_version, coords, static_id, occurred_at, frequency, video_url, "
         "author_id, assignee_id, created_at, updated_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
-            values["title"], values["description"], values.get("steps", ""), values.get("expected", ""),
+            board_id, values["title"], values["description"], values.get("steps", ""), values.get("expected", ""),
             values.get("actual", ""), column["id"],
-            values.get("priority_id") or default_option(db, "priority", "Средний"),
-            values.get("category_id") or default_option(db, "category", "Прочее"),
-            values.get("server_id") or default_option(db, "server", "Тестовый"),
+            values.get("priority_id") or default_option(db, board_id, "priority", "Средний"),
+            values.get("category_id") or default_option(db, board_id, "category", "Прочее"),
+            values.get("server_id") or default_option(db, board_id, "server", "Тестовый"),
             values.get("build_version", ""), values.get("coords", ""), values.get("static_id", ""),
-            values.get("occurred_at", ""), values["frequency"], values.get("video_url", ""),
+            values.get("occurred_at", ""), values.get("frequency", "unknown"), values.get("video_url", ""),
             g.user["id"], assignee_id, now, now,
         ),
     )
     card_id = cur.lastrowid
+    save_custom_values(db, card_id, values)
     M.log(db, card_id, g.user["id"], "created", new=column["name"])
     if values.get("tags"):
         M.set_card_tags(db, card_id, values["tags"], g.user["id"])
@@ -305,100 +481,122 @@ def card_create():
 
     title = values["title"]
     who = g.user["display_name"]
-    notified = mention_notify(db, card_id, title, [values["description"], values.get("steps", "")])
+    notified = mention_notify(db, card_id, board_id, title, [values["description"], values.get("steps", "")])
     if assignee_id:
         N.notify_users(db, "assigned", card_id, title, g.user, N.users_by_ids(db, [assignee_id]),
                        f"{who} назначил(а) вам задачу")
     N.notify_users(db, "new_card", card_id, title, g.user,
-                   [u for u in N.subscribers(db, "new_card") if u["id"] not in notified],
-                   f"{who} создал(а) карточку")
-    N.notify_channel(db, "created", card_id, title, f"🆕 Новая карточка от {who}")
+                   [u for u in N.subscribers(db, "new_card", board_id) if u["id"] not in notified],
+                   f"{who} создал(а) карточку на доске «{b['name']}»")
+    N.notify_channel(db, "created", card_id, title, f"🆕 Новая карточка от {who} · {b['name']}")
     db.commit()
-    A.details(f"#{card_id} «{title}»")
+    A.details(f"#{card_id} «{title}» ({b['name']})")
     g.audit_card_id = card_id
-    return full_card_response(db, card_id, 201)
+    return full_card_response(db, card_id, 201, role=role)
+
+
+def _history_value(db, field, value, fdefs):
+    if field in OPTION_FIELDS:
+        return M.option_name(db, value)
+    if field == "frequency":
+        return FREQUENCIES.get(value)
+    f = fdefs.get(field)
+    if f and f["type"] == "checkbox":
+        return "да" if value else "нет"
+    return value or "—"
 
 
 @bp.patch("/cards/<int:card_id>")
 def card_update(card_id):
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = card_access(card_id)
+    if err:
+        return err
     data = body()
     if str(data.get("version")) != str(card["version"]):
         return fail("Карточку только что изменил кто-то другой. Ваш текст остался в форме — "
                     "скопируйте его, откройте карточку заново и внесите правки.", 409)
-    values, errors = validate_card(db, data, current=card)
+    fields = M.board_fields(db, card["board_id"])
+    fdefs = {f["key"]: f for f in fields}
+    current_values = M.card_values(db, [card_id])[card_id]
+    values, errors = validate_card(db, data, card["board_id"], fields, current=card, current_values=current_values)
     if errors:
         return fail("Проверьте поля формы.", 400, errors)
 
     current_tags = [t["name"] for t in M.tags_for(db, [card_id])[card_id]]
+
+    def old_value(field):
+        if field == "tags":
+            return current_tags
+        if field in fdefs and not fdefs[field]["builtin"]:
+            return current_values.get(field[1:], "")
+        return card[field]
+
     changed = {}
     for field, value in values.items():
-        old = current_tags if field == "tags" else card[field]
+        old = old_value(field)
         if field == "tags":
             if sorted(x.lower() for x in value) != sorted(x.lower() for x in old):
                 changed[field] = value
         elif value != old:
             changed[field] = value
     if not changed:
-        return full_card_response(db, card_id)
+        return full_card_response(db, card_id, role=role)
 
-    allowed = P.editable_fields(g.user, card["author_id"])
-    forbidden = [FIELD_LABELS.get(f, f) for f in changed if f not in allowed]
+    label = lambda f: (fdefs[f]["label"] if f in fdefs else FIELD_LABELS.get(f, f))  # noqa: E731
+    allowed = P.editable_fields(role, g.user["id"], card["author_id"], custom_keys(fields))
+    forbidden = [label(f) for f in changed if f not in allowed]
     if forbidden:
         return fail("Нет прав менять: " + ", ".join(forbidden) + ".", 403)
-    A.details(f"«{card['title']}»: " + ", ".join(FIELD_LABELS.get(f, f).lower() for f in changed))
+    A.details(f"«{card['title']}»: " + ", ".join(label(f).lower() for f in changed))
 
+    custom_changed = {}
     for field, value in changed.items():
         if field == "tags":
             old, new = M.set_card_tags(db, card_id, value, g.user["id"])
             M.log(db, card_id, g.user["id"], "edited", "tags", ", ".join(old) or "—", ", ".join(new) or "—")
             continue
-        db.execute(f"UPDATE cards SET {field} = ? WHERE id = ?", (value, card_id))  # имя поля из белого списка
-        if field in OPTION_FIELDS:
-            M.log(db, card_id, g.user["id"], "edited", field, M.option_name(db, card[field]), M.option_name(db, value))
-        elif field == "frequency":
-            M.log(db, card_id, g.user["id"], "edited", field, FREQUENCIES.get(card[field]), FREQUENCIES.get(value))
-        elif field in LONG_FIELDS:
+        is_custom = field in fdefs and not fdefs[field]["builtin"]
+        if is_custom:
+            custom_changed[field] = value
+        else:
+            db.execute(f"UPDATE cards SET {field} = ? WHERE id = ?", (value, card_id))  # имя поля из белого списка
+        long_text = field in LONG_FIELDS or (is_custom and fdefs[field]["type"] == "textarea")
+        if long_text:
             M.log(db, card_id, g.user["id"], "edited", field)
         else:
-            M.log(db, card_id, g.user["id"], "edited", field, card[field] or "—", value or "—")
+            M.log(db, card_id, g.user["id"], "edited", field,
+                  _history_value(db, field, old_value(field), fdefs), _history_value(db, field, value, fdefs))
+    save_custom_values(db, card_id, custom_changed)
     touch(db, card_id)
 
     title = changed.get("title", card["title"])
     if "description" in changed or "steps" in changed:
-        mention_notify(db, card_id, title,
+        mention_notify(db, card_id, card["board_id"], title,
                        [changed.get("description", card["description"]), changed.get("steps", card["steps"])],
                        [card["description"], card["steps"]])
     db.commit()
-    return full_card_response(db, card_id)
+    return full_card_response(db, card_id, role=role)
 
 
 @bp.post("/cards/<int:card_id>/move")
 def card_move(card_id):
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = card_access(card_id)
+    if err:
+        return err
     if card["archived_at"]:
         return fail("Карточка в архиве. Сначала восстановите её.", 409)
     data = body()
-    target = M.get_column(db, data.get("column_id"))
+    board_id = card["board_id"]
+    target = M.get_column(db, data.get("column_id"), board_id)
     if target is None:
         return fail("Колонка не найдена.", 404)
     if data.get("from_column_id") is not None and str(data["from_column_id"]) != str(card["column_id"]):
         return fail("Карточку уже переместил кто-то другой. Доска обновлена.", 409)
     if target["id"] == card["column_id"]:
-        return full_card_response(db, card_id)
-    if not P.can_enter_column(g.user, target):
+        return full_card_response(db, card_id, role=role)
+    if not P.can_enter_column(role, target):
         return fail(f"Ваша роль не может переносить карточки в «{target['name']}».", 403)
 
     source = M.get_column(db, card["column_id"])
@@ -410,7 +608,7 @@ def card_move(card_id):
         return fail("Напишите, почему задача возвращается.", 400, {"comment": "Обязательное поле."})
     resolution = None
     if rules["needs_resolution"]:
-        resolution = M.get_option(db, data.get("resolution_id"), "resolution")
+        resolution = M.get_option(db, data.get("resolution_id"), "resolution", board_id)
         if resolution is None:
             return fail("Выберите резолюцию.", 400, {"resolution_id": "Обязательное поле."})
 
@@ -423,7 +621,7 @@ def card_move(card_id):
     if rules["is_return"]:
         updates["reopen_count"] = card["reopen_count"] + 1
     auto_assigned = False
-    if target["kind"] == "work" and card["assignee_id"] is None and g.user["role"] == "developer":
+    if target["kind"] == "work" and card["assignee_id"] is None and role == "developer":
         updates["assignee_id"] = g.user["id"]
         auto_assigned = True
     sets = ", ".join(f"{k} = ?" for k in updates)
@@ -442,7 +640,7 @@ def card_move(card_id):
     if comment:
         db.execute("INSERT INTO comments (card_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
                    (card_id, g.user["id"], comment, now))
-        mentioned = mention_notify(db, card_id, card["title"], [comment])
+        mentioned = mention_notify(db, card_id, board_id, card["title"], [comment])
 
     who = g.user["display_name"]
     title = card["title"]
@@ -454,38 +652,36 @@ def card_move(card_id):
         text, channel_event = f"{who} отправил(а) задачу на проверку", "review"
     else:
         text, channel_event = f"{who} переместил(а) задачу в «{target['name']}»", None
-    owners = [u for u in N.users_by_ids(db, [card["author_id"], card["assignee_id"]]) if u["id"] not in mentioned]
+    owners = [u for u in with_access(db, N.users_by_ids(db, [card["author_id"], card["assignee_id"]]), board_id)
+              if u["id"] not in mentioned]
     done = N.notify_users(db, "status", card_id, title, g.user, owners, text)
     if target["kind"] == "review":
         N.notify_users(db, "review", card_id, title, g.user,
-                       [u for u in N.subscribers(db, "review") if u["id"] not in done | mentioned], text)
+                       [u for u in N.subscribers(db, "review", board_id) if u["id"] not in done | mentioned], text)
     if channel_event:
         icon = {"returned": "↩️", "closed": "✅", "review": "🔎"}[channel_event]
         N.notify_channel(db, channel_event, card_id, title, f"{icon} {text}")
     db.commit()
-    return full_card_response(db, card_id)
+    return full_card_response(db, card_id, role=role)
 
 
 @bp.post("/cards/<int:card_id>/assign")
 def card_assign(card_id):
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = card_access(card_id)
+    if err:
+        return err
     raw = body().get("assignee_id")
     try:
         new_id = int(raw) if raw not in (None, "") else None
     except (TypeError, ValueError):
         return fail("Неверный исполнитель.")
     if new_id == card["assignee_id"]:
-        return full_card_response(db, card_id)
-    if not P.can_assign(g.user, card["assignee_id"], new_id):
+        return full_card_response(db, card_id, role=role)
+    if not P.can_assign(role, g.user["id"], card["assignee_id"], new_id):
         return fail("Вы не можете изменить исполнителя этой задачи.", 403)
-    if new_id is not None and user_can_be_assigned(db, new_id) is None:
-        return fail("Пользователь не найден или отключён.", 404)
+    if new_id is not None and user_can_be_assigned(db, new_id, card["board_id"]) is None:
+        return fail("Этот человек не участник доски или отключён.", 404)
     db.execute("UPDATE cards SET assignee_id = ? WHERE id = ?", (new_id, card_id))
     touch(db, card_id)
     M.log(db, card_id, g.user["id"], "assigned", "assignee",
@@ -496,21 +692,19 @@ def card_assign(card_id):
         N.notify_users(db, "assigned", card_id, card["title"], g.user, N.users_by_ids(db, [new_id]),
                        f"{g.user['display_name']} {text}")
         if new_id == g.user["id"]:
-            N.notify_users(db, "status", card_id, card["title"], g.user, N.users_by_ids(db, [card["author_id"]]),
+            N.notify_users(db, "status", card_id, card["title"], g.user,
+                           with_access(db, N.users_by_ids(db, [card["author_id"]]), card["board_id"]),
                            f"{g.user['display_name']} взял(а) вашу задачу в работу")
     db.commit()
-    return full_card_response(db, card_id)
+    return full_card_response(db, card_id, role=role)
 
 
 @bp.post("/cards/<int:card_id>/comments")
 def comment_create(card_id):
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = card_access(card_id)
+    if err:
+        return err
     text = clean_text(body().get("body"), LIMITS["comment"])
     if not text:
         return fail("Комментарий не может быть пустым.", 400, {"body": "Обязательное поле."})
@@ -519,13 +713,14 @@ def comment_create(card_id):
     db.execute("INSERT INTO comments (card_id, author_id, body, created_at) VALUES (?, ?, ?, ?)",
                (card_id, g.user["id"], text, utcnow()))
     db.execute("UPDATE cards SET updated_at = ? WHERE id = ?", (utcnow(), card_id))
-    mentioned = mention_notify(db, card_id, card["title"], [text])
-    owners = [u for u in N.users_by_ids(db, [card["author_id"], card["assignee_id"]]) if u["id"] not in mentioned]
+    mentioned = mention_notify(db, card_id, card["board_id"], card["title"], [text])
+    owners = [u for u in with_access(db, N.users_by_ids(db, [card["author_id"], card["assignee_id"]]),
+                                     card["board_id"]) if u["id"] not in mentioned]
     N.notify_users(db, "comment", card_id, card["title"], g.user, owners,
                    f"{g.user['display_name']}: {text[:200]}")
     db.commit()
     A.details(f"«{card['title']}»: {text[:150]}")
-    return full_card_response(db, card_id, 201)
+    return full_card_response(db, card_id, 201, role=role)
 
 
 # ---------------------------------------------------------------- вложения
@@ -550,12 +745,10 @@ def sniff_image(head):
 
 @bp.post("/cards/<int:card_id>/attachments")
 def attachment_upload(card_id):
-    denied = require_worker()
-    if denied:
-        return denied
     db = get_db()
-    if load_card(card_id) is None:
-        return fail("Карточка не найдена.", 404)
+    _card, role, err = card_access(card_id)
+    if err:
+        return err
     count = db.execute("SELECT COUNT(*) FROM attachments WHERE card_id = ?", (card_id,)).fetchone()[0]
     if count >= MAX_ATTACHMENTS_PER_CARD:
         return fail(f"Не больше {MAX_ATTACHMENTS_PER_CARD} изображений на карточку.", 400)
@@ -585,7 +778,7 @@ def attachment_upload(card_id):
     A.details(original)
     db.execute("UPDATE cards SET updated_at = ? WHERE id = ?", (utcnow(), card_id))
     db.commit()
-    return full_card_response(db, card_id, 201)
+    return full_card_response(db, card_id, 201, role=role)
 
 
 @bp.delete("/attachments/<int:att_id>")
@@ -594,8 +787,11 @@ def attachment_delete(att_id):
     att = db.execute("SELECT * FROM attachments WHERE id = ?", (att_id,)).fetchone()
     if att is None:
         return fail("Файл не найден.", 404)
-    if not P.can_delete_attachment(g.user, att["uploader_id"]):
-        return fail("Удалить файл может только тот, кто его загрузил, или администратор.", 403)
+    _card, role, err = card_access(att["card_id"])
+    if err:
+        return fail("Файл не найден.", 404)
+    if not P.can_delete_attachment(role, g.user["id"], att["uploader_id"]):
+        return fail("Удалить файл может только тот, кто его загрузил, руководитель доски или администратор.", 403)
     db.execute("DELETE FROM attachments WHERE id = ?", (att_id,))
     M.log(db, att["card_id"], g.user["id"], "attachment_deleted", None, att["original_name"], None)
     A.details(att["original_name"])
@@ -603,7 +799,7 @@ def attachment_delete(att_id):
     db.execute("UPDATE cards SET updated_at = ? WHERE id = ?", (utcnow(), att["card_id"]))
     db.commit()
     _remove_file(att["stored_name"])
-    return full_card_response(db, att["card_id"])
+    return full_card_response(db, att["card_id"], role=role)
 
 
 def _remove_file(stored_name):
@@ -614,48 +810,51 @@ def _remove_file(stored_name):
         pass
 
 
-# ---------------------------------------------------------------- архив (только админ)
+# ---------------------------------------------------------------- архив (руководитель доски и админ)
+
+def _manager_card(card_id, action):
+    card, role, err = card_access(card_id)
+    if err:
+        return None, None, err
+    if not P.is_manager(role):
+        return None, None, fail(f"{action} может только руководитель доски или администратор.", 403)
+    return card, role, None
+
 
 @bp.post("/cards/<int:card_id>/archive")
 def card_archive(card_id):
-    if not P.is_admin(g.user):
-        return fail("Архивировать может только администратор.", 403)
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = _manager_card(card_id, "Архивировать")
+    if err:
+        return err
     if not card["archived_at"]:
         db.execute("UPDATE cards SET archived_at = ? WHERE id = ?", (utcnow(), card_id))
         touch(db, card_id)
         M.log(db, card_id, g.user["id"], "archived")
         db.commit()
-    return full_card_response(db, card_id)
+    return full_card_response(db, card_id, role=role)
 
 
 @bp.post("/cards/<int:card_id>/restore")
 def card_restore(card_id):
-    if not P.is_admin(g.user):
-        return fail("Восстанавливать может только администратор.", 403)
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, role, err = _manager_card(card_id, "Восстанавливать")
+    if err:
+        return err
     if card["archived_at"]:
         db.execute("UPDATE cards SET archived_at = NULL WHERE id = ?", (card_id,))
         touch(db, card_id)
         M.log(db, card_id, g.user["id"], "restored")
         db.commit()
-    return full_card_response(db, card_id)
+    return full_card_response(db, card_id, role=role)
 
 
 @bp.delete("/cards/<int:card_id>")
 def card_delete(card_id):
-    if not P.is_admin(g.user):
-        return fail("Удалять может только администратор.", 403)
     db = get_db()
-    card = load_card(card_id)
-    if card is None:
-        return fail("Карточка не найдена.", 404)
+    card, _role, err = _manager_card(card_id, "Удалять")
+    if err:
+        return err
     if not card["archived_at"]:
         return fail("Удалить навсегда можно только карточку из архива. Сначала заархивируйте её.", 409)
     files = [r["stored_name"] for r in db.execute("SELECT stored_name FROM attachments WHERE card_id = ?", (card_id,))]
@@ -800,9 +999,10 @@ def _remove_avatar(stored):
 def telegram_link():
     bot = current_app.extensions["vektor_notify"].telegram
     if bot is None:
-        return fail("Telegram-бот не настроен на сервере.", 409)
+        return fail("Telegram-бот не настроен на сервере: в .env пустой TELEGRAM_BOT_TOKEN. "
+                    "Администратору: впишите токен и перезапустите сайт.", 409)
     if not bot.username:
-        return fail("Telegram-бот ещё подключается. Попробуйте через несколько секунд.", 409)
+        return fail(bot.status_text(), 409)
     code = secrets.token_urlsafe(16)
     expires = (datetime.now(timezone.utc) + timedelta(minutes=15)).strftime("%Y-%m-%dT%H:%M:%SZ")
     db = get_db()

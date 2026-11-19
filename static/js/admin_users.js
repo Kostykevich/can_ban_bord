@@ -20,7 +20,7 @@
 
   function render() {
     if (!users.length) {
-      tbody.replaceChildren(h("tr", null, h("td", { colspan: 6, class: "muted" }, "Пользователей нет")));
+      tbody.replaceChildren(h("tr", null, h("td", { colspan: 7, class: "muted" }, "Пользователей нет")));
       return;
     }
     tbody.replaceChildren(...users.map((u) => {
@@ -37,6 +37,9 @@
           h("div", null, h("strong", null, u.display_name, self ? " (вы)" : ""), h("small", null, "@" + u.username + (u.telegram ? " · Telegram ✓" : ""))))),
         h("td", null, login),
         h("td", null, role, u.role === "pending" ? h("div", { class: "small muted" }, "← выдайте роль") : null),
+        h("td", null, u.role === "admin" ? h("span", { class: "muted small" }, "все доски")
+          : u.boards.length ? h("div", { class: "user-boards" }, u.boards.map((b) => h("a", { class: "pill", href: `/admin/settings?board=${b.id}#members`, title: "Участники доски" }, `${b.name} · ${b.role_label}`)))
+          : h("span", { class: "muted small" }, "нет")),
         h("td", null, active),
         h("td", { title: u.last_login_at ? fullDate(u.last_login_at) : "" }, u.last_login_at ? relDate(u.last_login_at) : "не входил"),
         h("td", null, h("div", { class: "row-gap" },

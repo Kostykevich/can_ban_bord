@@ -51,8 +51,11 @@ class Base(unittest.TestCase):
                      "assigned,mention,comment,status,review", f"10{len(self.ids)}", utcnow()),
                 )
                 self.ids[name] = cur.lastrowid
-            self.cols = {r["kind"]: r["id"] for r in conn.execute("SELECT id, kind FROM board_columns")}
-            self.res_fixed = conn.execute("SELECT id FROM options WHERE name = 'Исправлено'").fetchone()[0]
+                if role in ("tester", "developer"):
+                    conn.execute("INSERT INTO board_members (board_id, user_id, role, created_at) VALUES (1, ?, ?, ?)",
+                                 (cur.lastrowid, role, utcnow()))
+            self.cols = {r["kind"]: r["id"] for r in conn.execute("SELECT id, kind FROM board_columns WHERE board_id = 1")}
+            self.res_fixed = conn.execute("SELECT id FROM options WHERE name = 'Исправлено' AND board_id = 1").fetchone()[0]
         conn.close()
         from vektor.auth import limiter
         limiter.fails.clear()
@@ -265,7 +268,8 @@ class AdminTests(Base):
     def test_non_admin_forbidden(self):
         dev = self.client_for("dev")
         self.assertEqual(dev.get("/api/admin/users").status_code, 403)
-        self.assertEqual(self.api(dev, "POST", "/api/admin/columns", {"name": "x", "kind": "work"}).status_code, 403)
+        self.assertEqual(self.api(dev, "POST", "/api/boards/1/columns", {"name": "x", "kind": "work"}).status_code, 403)
+        self.assertEqual(self.api(dev, "POST", "/api/boards", {"name": "x"}).status_code, 403)
 
     def test_role_cannot_be_self_escalated(self):
         dev = self.client_for("dev")
@@ -279,7 +283,7 @@ class AdminTests(Base):
     def test_custom_columns_and_options(self):
         admin = self.client_for("admin")
         tester = self.client_for("tester")
-        r = self.api(admin, "POST", "/api/admin/columns",
+        r = self.api(admin, "POST", "/api/boards/1/columns",
                      {"name": "Нужна инфа", "kind": "backlog", "move_roles": ["tester"], "wip_limit": 5})
         self.assertEqual(r.status_code, 201)
         new_col = [c for c in r.get_json()["columns"] if c["name"] == "Нужна инфа"][0]
@@ -287,18 +291,21 @@ class AdminTests(Base):
         self.assertEqual(self.api(tester, "POST", f"/api/cards/{cid}/move",
                                   {"column_id": new_col["id"]}).status_code, 200)
         # Удаление колонки с карточками требует целевую колонку
-        self.assertEqual(self.api(admin, "DELETE", f"/api/admin/columns/{new_col['id']}").status_code, 400)
-        r = self.api(admin, "DELETE", f"/api/admin/columns/{new_col['id']}",
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/1/columns/{new_col['id']}").status_code, 400)
+        r = self.api(admin, "DELETE", f"/api/boards/1/columns/{new_col['id']}",
                      {"target_column_id": self.cols["backlog"]})
         self.assertEqual(r.status_code, 200)
         self.assertEqual(tester.get(f"/api/cards/{cid}").get_json()["column_id"], self.cols["backlog"])
 
-        r = self.api(admin, "POST", "/api/admin/options", {"kind": "category", "name": "Казино"})
+        r = self.api(admin, "POST", "/api/boards/1/options", {"kind": "category", "name": "Казино"})
         self.assertEqual(r.status_code, 201)
         opt = [o for o in r.get_json()["options"]["category"] if o["name"] == "Казино"][0]
-        self.assertEqual(self.api(admin, "POST", f"/api/admin/options/{opt['id']}/move",
+        self.assertEqual(self.api(admin, "POST", f"/api/boards/1/options/{opt['id']}/move",
                                   {"direction": -1}).status_code, 200)
-        self.assertEqual(self.api(admin, "DELETE", f"/api/admin/options/{opt['id']}").status_code, 200)
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/1/options/{opt['id']}").status_code, 200)
+        # то же имя на другой доске допустимо — списки у каждой доски свои
+        self.assertEqual(self.api(admin, "POST", "/api/boards/2/options",
+                                  {"kind": "category", "name": "Казино"}).status_code, 201)
 
     def test_settings(self):
         admin = self.client_for("admin")
@@ -385,7 +392,170 @@ class AuditTests(Base):
         self.assertEqual(len(admin.get("/api/admin/audit").get_json()["items"]), before)
 
 
+class BoardTests(Base):
+    def add_member(self, board_id, username, role):
+        conn = connect(self.app.config["DATABASE"])
+        with conn:
+            conn.execute("INSERT OR REPLACE INTO board_members (board_id, user_id, role, created_at) VALUES (?, ?, ?, ?)",
+                         (board_id, self.ids[username], role, utcnow()))
+        conn.close()
+
+    def test_non_member_does_not_see_board(self):
+        tester = self.client_for("tester")
+        cid = self.create_card(tester)["id"]
+        boards = [b["id"] for b in tester.get("/api/boards").get_json()["boards"]]
+        self.assertEqual(boards, [1])  # на «Новые системы» тестера не добавляли
+        self.assertEqual(tester.get("/api/board?board_id=2").status_code, 403)
+        self.assertEqual(self.api(tester, "POST", "/api/cards", {"board_id": 2, "title": "a", "description": "b"}).status_code, 403)
+        # карточка второй доски для не-участника выглядит несуществующей
+        admin = self.client_for("admin")
+        other = self.create_card(admin, board_id=2)["id"]
+        self.assertEqual(tester.get(f"/api/cards/{other}").status_code, 404)
+        self.assertEqual(tester.get(f"/card/{other}").status_code, 404)
+        self.assertEqual(tester.get(f"/card/{cid}").status_code, 200)
+        # колонку чужой доски нельзя использовать для переноса
+        col2 = admin.get("/api/board?board_id=2").get_json()["columns"][1]["id"]
+        self.assertEqual(self.api(admin, "POST", f"/api/cards/{cid}/move", {"column_id": col2}).status_code, 404)
+
+    def test_mentions_only_reach_members(self):
+        admin = self.client_for("admin")
+        cid = self.create_card(admin, board_id=2)["id"]
+        self.api(admin, "POST", f"/api/cards/{cid}/comments", {"body": "@tester глянь"})
+        conn = connect(self.app.config["DATABASE"])
+        n = conn.execute("SELECT COUNT(*) FROM notifications WHERE user_id = ? AND event = 'mention'",
+                         (self.ids["tester"],)).fetchone()[0]
+        conn.close()
+        self.assertEqual(n, 0)  # тестер не видит доску — уведомлять бессмысленно
+
+    def test_lead_manages_own_board_only(self):
+        self.add_member(2, "dev", "lead")
+        lead = self.client_for("dev")
+        self.assertEqual(self.api(lead, "POST", "/api/boards/2/columns", {"name": "Идеи 2", "kind": "backlog"}).status_code, 201)
+        self.assertEqual(self.api(lead, "POST", "/api/boards/1/columns", {"name": "x", "kind": "backlog"}).status_code, 403)
+        # руководитель добавляет участников, но не руководителей
+        r = self.api(lead, "POST", "/api/boards/2/members", {"user_id": self.ids["tester"], "role": "tester"})
+        self.assertEqual(r.status_code, 201)
+        r = self.api(lead, "POST", "/api/boards/2/members", {"user_id": self.ids["dev2"], "role": "lead"})
+        self.assertEqual(r.status_code, 403)
+        # руководитель архивирует и назначает кого угодно на своей доске
+        tester = self.client_for("tester")
+        cid = self.create_card(tester, board_id=2)["id"]
+        self.assertEqual(self.api(lead, "POST", f"/api/cards/{cid}/assign", {"assignee_id": self.ids["tester"]}).status_code, 200)
+        self.assertEqual(self.api(lead, "POST", f"/api/cards/{cid}/archive").status_code, 200)
+        # а человека не с этой доски назначить нельзя
+        r = self.api(lead, "POST", f"/api/cards/{cid}/assign", {"assignee_id": self.ids["dev2"]})
+        self.assertEqual(r.status_code, 404)
+        # страница настроек открывается руководителю
+        self.assertEqual(lead.get("/admin/settings").status_code, 200)
+        self.assertEqual(tester.get("/admin/settings").status_code, 403)
+
+    def test_custom_fields(self):
+        admin = self.client_for("admin")
+        r = self.api(admin, "POST", "/api/boards/1/fields",
+                     {"label": "Сложность", "type": "select", "choices": "Лёгкая\nСложная", "required": True,
+                      "show_on_card": True})
+        self.assertEqual(r.status_code, 201, r.get_json())
+        field = [f for f in r.get_json()["fields"] if f["label"] == "Сложность"][0]
+        r = self.api(admin, "POST", "/api/boards/1/fields", {"label": "Оценка", "type": "number"})
+        num = [f for f in r.get_json()["fields"] if f["label"] == "Оценка"][0]
+
+        tester = self.client_for("tester")
+        base = {"title": "Новая система", "description": "Описание"}
+        r = self.api(tester, "POST", "/api/cards", base)
+        self.assertEqual(r.status_code, 400)  # обязательное поле
+        self.assertIn(field["key"], r.get_json()["fields"])
+        r = self.api(tester, "POST", "/api/cards", {**base, "fields": {str(field["id"]): "Нет такого"}})
+        self.assertEqual(r.status_code, 400)
+        r = self.api(tester, "POST", "/api/cards", {**base, "fields": {str(field["id"]): "Лёгкая", str(num["id"]): "abc"}})
+        self.assertEqual(r.status_code, 400)
+        card = self.create_card(tester, fields={str(field["id"]): "Лёгкая", str(num["id"]): "3,5"})
+        self.assertEqual(card["values"][str(field["id"])], "Лёгкая")
+        self.assertEqual(card["values"][str(num["id"])], "3.5")
+
+        # автор меняет своё поле, история пишется; разработчик чужое поле менять не может
+        r = self.api(tester, "PATCH", f"/api/cards/{card['id']}",
+                     {"version": card["version"], "fields": {str(field["id"]): "Сложная"}})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        updated = r.get_json()
+        self.assertEqual(updated["values"][str(field["id"])], "Сложная")
+        self.assertTrue(any(h["field"] == field["key"] and h["new_value"] == "Сложная" for h in updated["history"]))
+        dev = self.client_for("dev")
+        r = self.api(dev, "PATCH", f"/api/cards/{card['id']}",
+                     {"version": updated["version"], "fields": {str(num["id"]): "5"}})
+        self.assertEqual(r.status_code, 403)
+
+        # отключённое встроенное поле не принимается и не мешает
+        steps = [f for f in admin.get("/api/boards/1/fields").get_json()["fields"] if f["key"] == "steps"][0]
+        self.api(admin, "PATCH", f"/api/boards/1/fields/{steps['id']}", {"is_active": False})
+        c2 = self.create_card(tester, steps="не сохранится", fields={str(field["id"]): "Лёгкая"})
+        self.assertEqual(tester.get(f"/api/cards/{c2['id']}").get_json()["steps"], "")
+        # удалить заполненное поле можно только с подтверждением
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/1/fields/{field['id']}").status_code, 409)
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/1/fields/{field['id']}", {"confirm": True}).status_code, 200)
+        self.assertNotIn(str(field["id"]), tester.get(f"/api/cards/{card['id']}").get_json()["values"])
+
+    def test_board_crud(self):
+        admin = self.client_for("admin")
+        r = self.api(admin, "POST", "/api/boards", {"name": "Маппинг", "description": "Карты"})
+        self.assertEqual(r.status_code, 201)
+        new = [b for b in r.get_json()["boards"] if b["name"] == "Маппинг"][0]
+        data = admin.get(f"/api/board?board_id={new['id']}").get_json()
+        self.assertEqual(len(data["columns"]), 4)
+        self.assertTrue(data["options"]["resolution"])
+        cid = self.create_card(admin, board_id=new["id"])["id"]
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/{new['id']}").status_code, 409)  # есть карточки
+        self.api(admin, "POST", f"/api/cards/{cid}/archive")
+        self.api(admin, "DELETE", f"/api/cards/{cid}")
+        self.assertEqual(self.api(admin, "DELETE", f"/api/boards/{new['id']}").status_code, 200)
+
+    def test_new_user_lands_on_first_board(self):
+        admin = self.client_for("admin")
+        self.api(admin, "PATCH", f"/api/admin/users/{self.ids['newbie']}", {"role": "tester"})
+        users = admin.get("/api/admin/users").get_json()["users"]
+        newbie = [u for u in users if u["id"] == self.ids["newbie"]][0]
+        self.assertEqual([b["id"] for b in newbie["boards"]], [1])
+
+    def test_user_card(self):
+        tester = self.client_for("tester")
+        dev = self.client_for("dev")
+        cid = self.create_card(tester)["id"]
+        self.api(dev, "POST", f"/api/cards/{cid}/assign", {"assignee_id": self.ids["dev"]})
+        info = tester.get(f"/api/users/{self.ids['dev']}?board_id=1").get_json()
+        self.assertEqual(info["username"], "dev")
+        self.assertEqual(info["board_role"], "developer")
+        self.assertEqual(info["stats"]["active"], 1)
+        self.assertEqual([b["name"] for b in info["boards"]], ["Баги"])
+        self.assertNotIn("password_hash", info)
+        self.assertNotIn("discord_id", info)
+        # статистику чужой доски не показываем
+        self.assertIsNone(tester.get(f"/api/users/{self.ids['dev']}?board_id=2").get_json()["stats"])
+        self.assertEqual(tester.get(f"/api/users/{self.ids['newbie']}").status_code, 404)
+
+
+class ProxyTests(unittest.TestCase):
+    def test_waitress_trusts_caddy_only_with_flag(self):
+        import serve
+        os.environ.pop("TRUST_PROXY", None)
+        self.assertEqual(serve.proxy_options(), {})
+        os.environ["TRUST_PROXY"] = "1"
+        try:
+            opts = serve.proxy_options()
+        finally:
+            os.environ.pop("TRUST_PROXY", None)
+        self.assertEqual(opts["trusted_proxy"], "127.0.0.1")
+        self.assertIn("x-forwarded-for", opts["trusted_proxy_headers"])
+
+
 class TelegramTests(Base):
+    def test_status_text_explains_problem(self):
+        bot = TelegramBot("x", self.app.config["DATABASE"])
+        self.assertIn("не запущен", bot.status_text())
+        bot.started = True
+        bot.last_error = "Telegram недоступен: timed out"
+        self.assertIn("TELEGRAM_PROXY", bot.status_text())
+        bot.stopped = True
+        self.assertIn("BotFather", bot.status_text())
+
     def test_link_flow(self):
         conn = connect(self.app.config["DATABASE"])
         with conn:

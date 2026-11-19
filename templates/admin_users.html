@@ -6,7 +6,8 @@
     <h1>Пользователи</h1>
     <button type="button" class="btn btn-primary" id="add-user-btn">＋ Добавить пользователя</button>
   </div>
-  <p class="muted">Кто вошёл через Discord впервые, попадает сюда со статусом «Ожидает доступа» — выдайте ему роль.</p>
+  <p class="muted">Кто вошёл через Discord впервые, попадает сюда со статусом «Ожидает доступа» — выдайте ему роль.
+    Человек с новой ролью сразу попадает на первую доску. На другие доски добавляйте в «Настройки → Участники».</p>
 
   <div class="table-wrap">
     <table class="table" id="users-table">
@@ -14,7 +15,8 @@
         <tr>
           <th scope="col">Пользователь</th>
           <th scope="col">Вход</th>
-          <th scope="col">Роль</th>
+          <th scope="col">Роль на сайте</th>
+          <th scope="col">Доски</th>
           <th scope="col">Активен</th>
           <th scope="col">Последний вход</th>
           <th scope="col"><span class="sr-only">Действия</span></th>
@@ -43,7 +45,7 @@
         <input id="u-display" maxlength="50" autocomplete="off">
       </div>
       <div class="field">
-        <label for="u-role">Роль</label>
+        <label for="u-role">Роль на сайте <span class="muted">(тестер/разработчик — роль по умолчанию на первой доске)</span></label>
         <select id="u-role"></select>
         <p class="hint" data-error-for="role"></p>
       </div>

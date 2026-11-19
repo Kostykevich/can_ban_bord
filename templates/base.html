@@ -28,6 +28,8 @@
       <a href="{{ url_for('pages.admin_users') }}" {% if request.endpoint == 'pages.admin_users' %}aria-current="page"{% endif %}>
         Пользователи{% if pending_count %} <span class="badge" aria-label="ожидают доступа: {{ pending_count }}">{{ pending_count }}</span>{% endif %}
       </a>
+      {% endif %}
+      {% if can_settings %}
       <a href="{{ url_for('pages.admin_settings') }}" {% if request.endpoint == 'pages.admin_settings' %}aria-current="page"{% endif %}>Настройки</a>
       {% endif %}
     </nav>

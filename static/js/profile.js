@@ -159,6 +159,10 @@
     if (!BOOT.telegram_bot) {
       tStatus.replaceChildren(...statusLine(false, "Бот не настроен на сервере — обратитесь к администратору"));
       tActions.replaceChildren();
+    } else if (BOOT.telegram_problem && !p.telegram_linked) {
+      // бот настроен, но не подключился к Telegram — показываем причину
+      tStatus.replaceChildren(...statusLine(false, BOOT.telegram_problem));
+      tActions.replaceChildren(h("button", { type: "button", class: "btn btn-sm", onclick: () => location.reload() }, "Проверить ещё раз"));
     } else if (!p.telegram_linked) {
       tStatus.replaceChildren(...statusLine(false, "Не подключён"));
       tActions.replaceChildren(h("button", { type: "button", class: "btn btn-primary btn-sm", onclick: linkTelegram }, "Подключить Telegram"));

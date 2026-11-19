@@ -308,8 +308,136 @@ def _migration_3(conn):
     conn.execute("CREATE INDEX IF NOT EXISTS idx_audit_action ON audit_log(action)")
 
 
+def seed_board(conn, name, description, columns, options, builtin, custom, position=None):
+    """Создаёт доску с колонками, списками и полями. Возвращает id.
+    builtin: [(ключ встроенного поля, показывать_на_карточке)];
+    custom: [(название, тип, варианты через \\n, показывать_на_карточке)]."""
+    now = utcnow()
+    if position is None:
+        position = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM boards").fetchone()[0]
+    board_id = conn.execute(
+        "INSERT INTO boards (name, description, position, created_at) VALUES (?, ?, ?, ?)",
+        (name, description, position, now),
+    ).lastrowid
+    for pos, (col_name, kind, roles) in enumerate(columns):
+        conn.execute(
+            "INSERT INTO board_columns (board_id, name, kind, move_roles, position, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (board_id, col_name, kind, roles, pos, now),
+        )
+    for kind, names in options.items():
+        for pos, opt in enumerate(names):
+            conn.execute(
+                "INSERT INTO options (board_id, kind, name, position, created_at) VALUES (?, ?, ?, ?, ?)",
+                (board_id, kind, opt, pos, now),
+            )
+    seed_fields(conn, board_id, builtin, custom)
+    return board_id
+
+
+def seed_fields(conn, board_id, builtin, custom):
+    now = utcnow()
+    pos = conn.execute("SELECT COALESCE(MAX(position), -1) + 1 FROM board_fields WHERE board_id = ?",
+                       (board_id,)).fetchone()[0]
+    for key, on_card in builtin:
+        conn.execute(
+            "INSERT OR IGNORE INTO board_fields (board_id, key, label, type, show_on_card, position, created_at) "
+            "VALUES (?, ?, ?, 'builtin', ?, ?, ?)",
+            (board_id, key, C.BUILTIN_FIELDS[key]["label"], 1 if on_card else 0, pos, now),
+        )
+        pos += 1
+    for label, ftype, choices, on_card in custom:
+        cur = conn.execute(
+            "INSERT INTO board_fields (board_id, key, label, type, choices, show_on_card, position, created_at) "
+            "VALUES (?, '', ?, ?, ?, ?, ?, ?)",
+            (board_id, label, ftype, choices, 1 if on_card else 0, pos, now),
+        )
+        conn.execute("UPDATE board_fields SET key = ? WHERE id = ?", (f"f{cur.lastrowid}", cur.lastrowid))
+        pos += 1
+
+
+def _migration_4(conn):
+    """Несколько досок (подразделений): у каждой свои колонки, списки, поля карточек и участники.
+    Существующие колонки, списки и карточки переезжают на доску №1 «Баги»."""
+    now = utcnow()
+    _script(conn, """
+        CREATE TABLE boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE board_members (
+            board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+            user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            role TEXT NOT NULL CHECK (role IN ('lead', 'developer', 'tester')),
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (board_id, user_id)
+        );
+        CREATE TABLE board_fields (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id INTEGER NOT NULL REFERENCES boards(id) ON DELETE CASCADE,
+            key TEXT NOT NULL,
+            label TEXT NOT NULL,
+            type TEXT NOT NULL,
+            required INTEGER NOT NULL DEFAULT 0,
+            choices TEXT NOT NULL DEFAULT '',
+            hint TEXT NOT NULL DEFAULT '',
+            show_on_card INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            position INTEGER NOT NULL,
+            created_at TEXT NOT NULL
+        );
+        CREATE TABLE card_values (
+            card_id INTEGER NOT NULL REFERENCES cards(id) ON DELETE CASCADE,
+            field_id INTEGER NOT NULL REFERENCES board_fields(id) ON DELETE CASCADE,
+            value TEXT NOT NULL,
+            PRIMARY KEY (card_id, field_id)
+        );
+        CREATE INDEX idx_board_members_user ON board_members(user_id);
+        CREATE INDEX idx_board_fields_board ON board_fields(board_id, position)
+    """)
+    conn.execute("INSERT INTO boards (id, name, description, position, created_at) VALUES (1, 'Баги', ?, 0, ?)",
+                 (C.DEFAULT_SETTINGS["board_subtitle"], now))
+    conn.execute("ALTER TABLE board_columns ADD COLUMN board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE")
+    conn.execute("ALTER TABLE cards ADD COLUMN board_id INTEGER REFERENCES boards(id)")
+    conn.execute("UPDATE board_columns SET board_id = 1")
+    conn.execute("UPDATE cards SET board_id = 1")
+    conn.execute("CREATE INDEX idx_columns_board ON board_columns(board_id, position)")
+    conn.execute("CREATE INDEX idx_cards_board ON cards(board_id)")
+
+    # Списки теперь у каждой доски свои: пересобираем таблицу, чтобы имя было уникально в пределах доски.
+    # (внешние ключи на время миграции выключены — см. migrate)
+    _script(conn, """
+        CREATE TABLE options_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id INTEGER REFERENCES boards(id) ON DELETE CASCADE,
+            kind TEXT NOT NULL CHECK (kind IN ('priority', 'category', 'resolution', 'server')),
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL,
+            is_active INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL,
+            UNIQUE (board_id, kind, name)
+        );
+        INSERT INTO options_new (id, board_id, kind, name, position, is_active, created_at)
+            SELECT id, 1, kind, name, position, is_active, created_at FROM options;
+        DROP TABLE options;
+        ALTER TABLE options_new RENAME TO options;
+        CREATE INDEX idx_options_board ON options(board_id, kind, position)
+    """)
+
+    seed_fields(conn, 1, [(key, key == "category_id") for key in C.BUILTIN_FIELDS], [])
+    conn.execute("INSERT INTO board_members (board_id, user_id, role, created_at) "
+                 "SELECT 1, id, role, ? FROM users WHERE role IN ('tester', 'developer')", (now,))
+
+    s = C.SEED_FEATURE_BOARD
+    feature = seed_board(conn, s["name"], s["description"], s["columns"], s["options"], s["builtin"], s["custom"])
+    conn.execute("INSERT INTO board_members (board_id, user_id, role, created_at) "
+                 "SELECT ?, user_id, role, ? FROM board_members WHERE board_id = 1", (feature, now))
+
+
 # Новые миграции добавляются в конец списка. Старые никогда не меняются.
-MIGRATIONS = [_migration_1, _migration_2, _migration_3]
+MIGRATIONS = [_migration_1, _migration_2, _migration_3, _migration_4]
 
 
 def backup_file(db_path, reason):
@@ -350,11 +478,18 @@ def migrate(db_path, log=print):
 
     conn = connect(db_path)
     conn.isolation_level = None  # транзакции управляются вручную
+    # Пересборка таблиц (миграция №4) требует выключенных внешних ключей; их целостность
+    # проверяется перед COMMIT через foreign_key_check.
+    conn.execute("PRAGMA foreign_keys = OFF")
     try:
         for number in range(current + 1, target + 1):
+            before = len(conn.execute("PRAGMA foreign_key_check").fetchall())
             conn.execute("BEGIN")
             try:
                 MIGRATIONS[number - 1](conn)
+                broken = conn.execute("PRAGMA foreign_key_check").fetchall()
+                if len(broken) > before:
+                    raise RuntimeError(f"Миграция №{number}: нарушены связи в таблицах {sorted({r[0] for r in broken})}")
                 conn.execute(f"PRAGMA user_version = {number}")
                 conn.execute("COMMIT")
             except Exception:
